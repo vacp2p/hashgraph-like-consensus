@@ -23,8 +23,6 @@ pub enum ConsensusError {
 
     #[error("Session not active")]
     SessionNotActive,
-    #[error("Group not found")]
-    GroupNotFound,
     #[error("Session not found")]
     SessionNotFound,
 

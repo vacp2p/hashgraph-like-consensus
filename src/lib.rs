@@ -6,6 +6,12 @@ pub mod protos {
     }
 }
 
-pub mod service;
+pub mod consensus;
 pub mod error;
+pub mod events;
+pub mod scope;
+pub mod service;
+pub mod session;
+pub mod stats;
+pub mod storage;
 pub mod utils;

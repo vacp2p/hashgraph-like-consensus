@@ -1,233 +1,17 @@
-//! Consensus module implementing HashGraph-like consensus for distributed voting
-//!
-//! This module implements the consensus protocol described in the [RFC](https://github.com/vacp2p/rfc-index/blob/consensus-hashgraph-like/vac/raw/consensus-hashgraphlike.md)
-//!
-//! The consensus is designed to work with GossipSub-like networks and provides:
-//! - Proposal management
-//! - Vote collection and validation
-//! - Consensus reached detection
 use alloy_signer::{Signature, Signer};
 use prost::Message;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::broadcast;
-use tracing::info;
+use std::{
+    collections::HashMap,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use uuid::Uuid;
 
-use crate::error::ConsensusError;
-use crate::protos::consensus::v1::{Proposal, Vote};
+use crate::{
+    error::ConsensusError,
+    protos::consensus::v1::{Proposal, Vote},
+};
 
-/// Consensus events emitted when consensus state changes
-#[derive(Debug, Clone)]
-pub enum ConsensusEvent {
-    /// Consensus has been reached for a proposal
-    ConsensusReached { proposal_id: u32, result: bool },
-    /// Consensus failed due to timeout or other reasons
-    ConsensusFailed { proposal_id: u32, reason: String },
-}
-
-/// Consensus configuration
-#[derive(Debug, Clone)]
-pub struct ConsensusConfig {
-    /// Minimum number of votes required for consensus (as percentage of expected voters)
-    pub consensus_threshold: f64,
-    /// Timeout for consensus rounds in seconds
-    pub consensus_timeout: u64,
-    /// Maximum number of rounds before consensus is considered failed
-    pub max_rounds: u32,
-    /// Whether to use liveness criteria for silent peers
-    pub liveness_criteria: bool,
-}
-
-impl Default for ConsensusConfig {
-    fn default() -> Self {
-        Self {
-            consensus_threshold: 0.67, // 67% supermajority
-            consensus_timeout: 10,     // 10 seconds
-            max_rounds: 3,             // Maximum 3 rounds
-            liveness_criteria: true,
-        }
-    }
-}
-
-/// Consensus state for a proposal
-#[derive(Debug, Clone)]
-pub enum ConsensusState {
-    /// Proposal is active and accepting votes
-    Active,
-    /// Consensus has been reached
-    ConsensusReached(bool), // true for yes, false for no
-    /// Consensus failed (timeout or insufficient votes)
-    Failed,
-    /// Proposal has expired
-    Expired,
-}
-
-/// Consensus session for a specific proposal
-#[derive(Debug)]
-pub struct ConsensusSession {
-    pub proposal: Proposal,
-    pub state: ConsensusState,
-    pub votes: HashMap<Vec<u8>, Vote>, // vote_owner -> Vote
-    pub created_at: u64,
-    pub config: ConsensusConfig,
-    pub event_sender: broadcast::Sender<(String, ConsensusEvent)>,
-    // pub decisions_tx: broadcast::Sender<ProposalResult>,
-    pub group_name: String,
-}
-
-impl ConsensusSession {
-    pub fn new(
-        proposal: Proposal,
-        config: ConsensusConfig,
-        event_sender: broadcast::Sender<(String, ConsensusEvent)>,
-        // decisions_tx: broadcast::Sender<ProposalResult>,
-        group_name: &str,
-    ) -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Failed to get current time")
-            .as_secs();
-
-        Self {
-            proposal,
-            state: ConsensusState::Active,
-            votes: HashMap::new(),
-            created_at: now,
-            config,
-            event_sender,
-            // decisions_tx,
-            group_name: group_name.to_string(),
-        }
-    }
-
-    pub fn set_consensus_threshold(&mut self, consensus_threshold: f64) {
-        self.config.consensus_threshold = consensus_threshold
-    }
-
-    /// Add a vote to the session
-    pub fn add_vote(&mut self, vote: Vote) -> Result<(), ConsensusError> {
-        match self.state {
-            ConsensusState::Active => {
-                // Check if voter already voted
-                if self.votes.contains_key(&vote.vote_owner) {
-                    return Err(ConsensusError::DuplicateVote);
-                }
-
-                // Add vote into the session and proposal
-                self.votes.insert(vote.vote_owner.clone(), vote.clone());
-                self.proposal.votes.push(vote.clone());
-
-                // Check if consensus can be reached after adding the vote
-                self.check_consensus();
-                Ok(())
-            }
-            ConsensusState::ConsensusReached(_) => {
-                info!(
-                    "[mod::add_vote]: Consensus already reached for proposal {}, skipping vote",
-                    self.proposal.proposal_id
-                );
-                Ok(())
-            }
-            _ => Err(ConsensusError::SessionNotActive),
-        }
-    }
-
-    /// Count the number of required votes to reach consensus
-    fn count_required_votes(&self) -> usize {
-        let expected_voters = self.proposal.expected_voters_count as usize;
-        if expected_voters <= 2 {
-            expected_voters
-        } else {
-            ((expected_voters as f64) * self.config.consensus_threshold) as usize
-        }
-    }
-
-    /// Check if consensus has been reached
-    ///
-    /// - `ConsensusReached(true)` if yes votes > no votes
-    /// - `ConsensusReached(false)`
-    ///     - if no votes > yes votes
-    ///     - if no votes == yes votes and we have all votes
-    /// - `Active`
-    ///     - if no votes == yes votes and we don't have all votes
-    ///     - if total votes < required votes (we wait for more votes)
-    fn check_consensus(&mut self) {
-        let total_votes = self.votes.len();
-        let yes_votes = self.votes.values().filter(|v| v.vote).count();
-        let no_votes = total_votes - yes_votes;
-
-        // Check if we have all expected votes (only calculate consensus immediately if ALL votes received)
-        let expected_voters = self.proposal.expected_voters_count as usize;
-        let required_votes = self.count_required_votes();
-        // For <= 2 voters, we require all votes to reach consensus
-        if total_votes >= required_votes {
-            // All votes received - calculate consensus immediately
-            if yes_votes > no_votes {
-                self.state = ConsensusState::ConsensusReached(true);
-                info!(
-                    "[mod::check_consensus]: Enough votes received {yes_votes}-{no_votes} - consensus reached: YES"
-                );
-                self.emit_consensus_event(ConsensusEvent::ConsensusReached {
-                    proposal_id: self.proposal.proposal_id,
-                    result: true,
-                });
-            } else if no_votes > yes_votes {
-                self.state = ConsensusState::ConsensusReached(false);
-                info!(
-                    "[mod::check_consensus]: Enough votes received {yes_votes}-{no_votes} - consensus reached: NO"
-                );
-                self.emit_consensus_event(ConsensusEvent::ConsensusReached {
-                    proposal_id: self.proposal.proposal_id,
-                    result: false,
-                });
-            } else {
-                // Tie - if it's all votes, we reject the proposal
-                if total_votes == expected_voters {
-                    self.state = ConsensusState::ConsensusReached(false);
-                    info!(
-                        "[mod::check_consensus]: All votes received and tie - consensus not reached"
-                    );
-                    self.emit_consensus_event(ConsensusEvent::ConsensusReached {
-                        proposal_id: self.proposal.proposal_id,
-                        result: false,
-                    });
-                } else {
-                    // Tie - if it's not all votes, we wait for more votes
-                    self.state = ConsensusState::Active;
-                    info!(
-                        "[mod::check_consensus]: Not enough votes received - consensus not reached"
-                    );
-                }
-            }
-        }
-    }
-
-    /// Emit a consensus event
-    pub fn emit_consensus_event(&self, event: ConsensusEvent) {
-        info!("[mod::emit_consensus_event]: Emitting consensus event: {event:?}");
-        let _ = self
-            .event_sender
-            .send((self.group_name.clone(), event.clone()));
-        // let _ = self.decisions_tx.send(ProposalResult {
-        //     group_id: self.group_name.clone(),
-        //     proposal_id: self.proposal.proposal_id,
-        //     outcome: Outcome::from(event) as i32,
-        //     decided_at_ms: SystemTime::now()
-        //         .duration_since(UNIX_EPOCH)
-        //         .expect("Failed to get current time")
-        //         .as_secs(),
-        // });
-    }
-
-    /// Check if the session is still active
-    pub fn is_active(&self) -> bool {
-        matches!(self.state, ConsensusState::Active)
-    }
-}
-
-/// Compute the hash of a vote
 pub fn compute_vote_hash(vote: &Vote) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(vote.vote_id.to_le_bytes());
@@ -240,7 +24,6 @@ pub fn compute_vote_hash(vote: &Vote) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-/// Create a vote for an incoming proposal based on user's vote
 pub async fn create_vote_for_proposal<S: Signer + Sync>(
     proposal: &Proposal,
     user_vote: bool,
@@ -250,9 +33,7 @@ pub async fn create_vote_for_proposal<S: Signer + Sync>(
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
 
-    // Get the latest vote as parent and received hash
     let (parent_hash, received_hash) = if let Some(latest_vote) = proposal.votes.last() {
-        // Check if we already voted (same voter)
         let is_same_voter = latest_vote.vote_owner == signer.address().as_slice().to_vec();
         if is_same_voter {
             // Same voter: parent_hash should be the hash of our previous vote
@@ -265,20 +46,18 @@ pub async fn create_vote_for_proposal<S: Signer + Sync>(
         (Vec::new(), Vec::new())
     };
 
-    // Create our vote with user's choice
     let mut vote = Vote {
         vote_id: Uuid::new_v4().as_u128() as u32,
         vote_owner: signer.address().as_slice().to_vec(),
         proposal_id: proposal.proposal_id,
         timestamp: now,
-        vote: user_vote, // Use the user's actual vote choice
+        vote: user_vote,
         parent_hash,
         received_hash,
-        vote_hash: Vec::new(), // Will be computed below
-        signature: Vec::new(), // Will be signed below
+        vote_hash: Vec::new(),
+        signature: Vec::new(),
     };
 
-    // Compute vote hash and signature
     vote.vote_hash = compute_vote_hash(&vote);
     let vote_bytes = vote.encode_to_vec();
     let signature = signer
@@ -287,15 +66,6 @@ pub async fn create_vote_for_proposal<S: Signer + Sync>(
         .map_err(|e| ConsensusError::InvalidSignature(e.to_string()))?;
     vote.signature = signature.as_bytes().to_vec();
     Ok(vote)
-}
-
-/// Statistics about consensus sessions
-#[derive(Debug, Clone)]
-pub struct ConsensusStats {
-    pub total_sessions: usize,
-    pub active_sessions: usize,
-    pub consensus_reached: usize,
-    pub failed_sessions: usize,
 }
 
 pub fn verify_vote_hash(
@@ -317,4 +87,110 @@ pub fn verify_vote_hash(
         .map_err(|e| ConsensusError::InvalidSignature(e.to_string()))?;
     let address_bytes = address.as_slice().to_vec();
     Ok(address_bytes == public_key)
+}
+
+pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
+    for vote in proposal.votes.iter() {
+        validate_vote(vote, proposal.expiration_time)?;
+    }
+    validate_vote_chain(&proposal.votes)?;
+    Ok(())
+}
+
+pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusError> {
+    if vote.vote_owner.is_empty() {
+        return Err(ConsensusError::EmptyVoteOwner);
+    }
+
+    if vote.vote_hash.is_empty() {
+        return Err(ConsensusError::EmptyVoteHash);
+    }
+
+    if vote.signature.is_empty() {
+        return Err(ConsensusError::EmptySignature);
+    }
+
+    let expected_hash = compute_vote_hash(vote);
+    if vote.vote_hash != expected_hash {
+        return Err(ConsensusError::InvalidVoteHash);
+    }
+
+    let mut vote_copy = vote.clone();
+    vote_copy.signature = Vec::new();
+    let vote_copy_bytes = vote_copy.encode_to_vec();
+
+    let verified = verify_vote_hash(&vote.signature, &vote.vote_owner, &vote_copy_bytes)?;
+
+    if !verified {
+        return Err(ConsensusError::InvalidVoteSignature);
+    }
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+
+    if vote.timestamp > now {
+        return Err(ConsensusError::InvalidVoteTimestamp);
+    }
+
+    if now - vote.timestamp > expiration_time {
+        return Err(ConsensusError::VoteExpired);
+    }
+
+    Ok(())
+}
+
+fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
+    if votes.len() <= 1 {
+        return Ok(());
+    }
+
+    for i in 0..votes.len() - 1 {
+        let current_vote = &votes[i];
+        let next_vote = &votes[i + 1];
+
+        if current_vote.vote_hash != next_vote.received_hash {
+            return Err(ConsensusError::ReceivedHashMismatch);
+        }
+
+        if current_vote.vote_owner == next_vote.vote_owner
+            && current_vote.vote_hash != next_vote.parent_hash
+        {
+            return Err(ConsensusError::ParentHashMismatch);
+        }
+    }
+
+    Ok(())
+}
+
+pub fn calculate_consensus_result(
+    votes: &HashMap<Vec<u8>, Vote>,
+    liveness_criteria_yes: bool,
+) -> bool {
+    let total_votes = votes.len() as u32;
+    let yes_votes = votes.values().filter(|v| v.vote).count() as u32;
+    let no_votes = total_votes - yes_votes;
+
+    if yes_votes > no_votes {
+        true
+    } else if no_votes > yes_votes {
+        false
+    } else {
+        liveness_criteria_yes
+    }
+}
+
+fn calculate_required_votes(expected_voters: u32, consensus_threshold: f64) -> u32 {
+    if expected_voters == 1 || expected_voters == 2 {
+        expected_voters
+    } else {
+        ((expected_voters as f64) * consensus_threshold) as u32
+    }
+}
+
+pub fn check_sufficient_votes(
+    total_votes: u32,
+    expected_voters: u32,
+    consensus_threshold: f64,
+) -> bool {
+    let required_votes = calculate_required_votes(expected_voters, consensus_threshold);
+    total_votes >= required_votes
 }
