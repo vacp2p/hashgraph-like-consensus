@@ -147,10 +147,11 @@ impl ConsensusSession {
         validate_proposal(&proposal)?;
 
         // Create clean proposal for session (votes will be added via initialize_with_votes)
+        // RFC Section 1: Proposals start with round = 1 (proposal creation)
         let existing_votes = proposal.votes.clone();
         let mut clean_proposal = proposal.clone();
         clean_proposal.votes.clear();
-        clean_proposal.round = 0;
+        clean_proposal.round = 1;
 
         let mut session = Self::new(clean_proposal, config);
         let transition = session.initialize_with_votes(existing_votes, proposal.expiration_time)?;
@@ -206,8 +207,10 @@ impl ConsensusSession {
             validate_vote(vote, expiration_time)?;
         }
 
-        // RFC Section 2.5.3: Round increments for each vote. Start at 0 so final round = vote count
-        self.proposal.round = 0;
+        // RFC Section 1: Proposals start with round = 1 (proposal creation)
+        // RFC Section 2.5.3: Round increments for each vote
+        // So final round = 1 (creation) + vote_count
+        self.proposal.round = 1;
         for vote in votes {
             self.votes.insert(vote.vote_owner.clone(), vote.clone());
             self.proposal.votes.push(vote);
