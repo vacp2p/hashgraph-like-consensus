@@ -6,6 +6,10 @@ use std::{
 use crate::{
     error::ConsensusError,
     protos::consensus::v1::{Proposal, Vote},
+    utils::{
+        calculate_required_votes, generate_proposal_id, validate_proposal, validate_vote,
+        validate_vote_chain,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -20,7 +24,60 @@ pub enum ConsensusTransition {
     ConsensusReached(bool),
 }
 
-/// Consensus configuration
+#[derive(Debug, Clone)]
+pub struct CreateProposalRequest {
+    pub name: String,
+    pub payload: String,
+    pub proposal_owner: Vec<u8>,
+    pub expected_voters_count: u32,
+    pub expiration_time: u64,
+    pub liveness_criteria_yes: bool,
+}
+
+impl CreateProposalRequest {
+    pub fn new(
+        name: String,
+        payload: String,
+        proposal_owner: Vec<u8>,
+        expected_voters_count: u32,
+        expiration_time: u64,
+        liveness_criteria_yes: bool,
+    ) -> Result<Self, ConsensusError> {
+        if expected_voters_count == 0 {
+            return Err(ConsensusError::InvalidProposalConfiguration(
+                "expected_voters_count must be greater than 0".to_string(),
+            ));
+        }
+        let request = Self {
+            name,
+            payload,
+            proposal_owner,
+            expected_voters_count,
+            expiration_time,
+            liveness_criteria_yes,
+        };
+        Ok(request)
+    }
+
+    pub fn into_proposal(self) -> Result<Proposal, ConsensusError> {
+        let proposal_id = generate_proposal_id();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+
+        Ok(Proposal {
+            name: self.name,
+            payload: self.payload,
+            proposal_id,
+            proposal_owner: self.proposal_owner,
+            votes: vec![],
+            expected_voters_count: self.expected_voters_count,
+            round: 1,
+            timestamp: now,
+            expiration_time: now + self.expiration_time,
+            liveness_criteria_yes: self.liveness_criteria_yes,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ConsensusConfig {
     /// Minimum number of votes required for consensus (as percentage of expected voters)
@@ -36,23 +93,22 @@ pub struct ConsensusConfig {
 impl Default for ConsensusConfig {
     fn default() -> Self {
         Self {
-            consensus_threshold: 0.67, // 67% supermajority
-            consensus_timeout: 10,     // 10 seconds
-            max_rounds: 3,             // Maximum 3 rounds
+            consensus_threshold: 2.0 / 3.0, // RFC Section 4: 2n/3 threshold
+            consensus_timeout: 10,
+            max_rounds: 3,
             liveness_criteria: true,
         }
     }
 }
 
-/// Consensus state for a proposal
 #[derive(Debug, Clone)]
 pub enum ConsensusState {
     Active,
-    ConsensusReached(bool), // true for yes, false for no
+    ConsensusReached(bool),
     Expired,
+    Failed,
 }
 
-/// Consensus session for a specific proposal
 #[derive(Debug, Clone)]
 pub struct ConsensusSession {
     pub proposal: Proposal,
@@ -63,10 +119,13 @@ pub struct ConsensusSession {
 }
 
 impl ConsensusSession {
+    /// Create a new session from a validated proposal (no votes).
+    /// Used when creating proposals locally where we know the proposal is clean.
     pub(crate) fn new(proposal: Proposal, config: ConsensusConfig) -> Self {
+        // Fallback to 0 if system time is before UNIX_EPOCH (should never happen)
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Failed to get current time")
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
             .as_secs();
 
         Self {
@@ -76,6 +135,27 @@ impl ConsensusSession {
             created_at: now,
             config,
         }
+    }
+
+    /// Create a session from a proposal, validating the proposal and all votes.
+    /// This validates the proposal structure, vote chain, and individual votes before creating the session.
+    /// The session is created with votes already processed and rounds correctly set.
+    pub(crate) fn from_proposal(
+        proposal: Proposal,
+        config: ConsensusConfig,
+    ) -> Result<(Self, ConsensusTransition), ConsensusError> {
+        validate_proposal(&proposal)?;
+
+        // Create clean proposal for session (votes will be added via initialize_with_votes)
+        let existing_votes = proposal.votes.clone();
+        let mut clean_proposal = proposal.clone();
+        clean_proposal.votes.clear();
+        clean_proposal.round = 0;
+
+        let mut session = Self::new(clean_proposal, config);
+        let transition = session.initialize_with_votes(existing_votes, proposal.expiration_time)?;
+
+        Ok((session, transition))
     }
 
     pub(crate) fn set_consensus_threshold(&mut self, consensus_threshold: f64) {
@@ -90,6 +170,8 @@ impl ConsensusSession {
                 }
                 self.votes.insert(vote.vote_owner.clone(), vote.clone());
                 self.proposal.votes.push(vote.clone());
+                // RFC Section 2.5.3
+                self.proposal.round += 1;
                 Ok(self.check_consensus())
             }
             ConsensusState::ConsensusReached(res) => Ok(ConsensusTransition::ConsensusReached(res)),
@@ -97,57 +179,101 @@ impl ConsensusSession {
         }
     }
 
-    /// Count the number of required votes to reach consensus
-    /// If the number of expected voters is less than or equal to 2, we require all votes to reach consensus
-    /// Otherwise, we require a supermajority of votes to reach consensus
-    fn count_required_votes(&self) -> usize {
-        let expected_voters = self.proposal.expected_voters_count as usize;
-        if expected_voters <= 2 {
-            expected_voters
-        } else {
-            ((expected_voters as f64) * self.config.consensus_threshold) as usize
+    /// Initialize session with multiple votes, validating all before adding any.
+    /// Validates duplicates, vote chain, and individual votes, then adds all atomically.
+    pub(crate) fn initialize_with_votes(
+        &mut self,
+        votes: Vec<Vote>,
+        expiration_time: u64,
+    ) -> Result<ConsensusTransition, ConsensusError> {
+        if !matches!(self.state, ConsensusState::Active) {
+            return Err(ConsensusError::SessionNotActive);
         }
+
+        if votes.is_empty() {
+            return Ok(ConsensusTransition::StillActive);
+        }
+
+        let mut seen_owners = std::collections::HashSet::new();
+        for vote in &votes {
+            if !seen_owners.insert(&vote.vote_owner) {
+                return Err(ConsensusError::DuplicateVote);
+            }
+        }
+
+        validate_vote_chain(&votes)?;
+        for vote in &votes {
+            validate_vote(vote, expiration_time)?;
+        }
+
+        // RFC Section 2.5.3: Round increments for each vote. Start at 0 so final round = vote count
+        self.proposal.round = 0;
+        for vote in votes {
+            self.votes.insert(vote.vote_owner.clone(), vote.clone());
+            self.proposal.votes.push(vote);
+            self.proposal.round += 1;
+        }
+
+        Ok(self.check_consensus())
     }
 
-    /// Check if consensus has been reached
-    ///
-    /// - `ConsensusReached(true)`
-    ///     - if yes votes > no votes
-    ///     - if no votes == yes votes && liveness criteria is true && we have get all possible votes
-    /// - `ConsensusReached(false)`
-    ///     - if no votes > yes votes
-    ///     - if no votes == yes votes && liveness criteria is false && we have get all possible votes
-    /// - `StillActive`
-    ///     - if no votes == yes votes and we don't get all votes, but reach the required threshold
-    ///     - if total votes < required votes (we wait for more votes)
+    /// RFC Section 4 (Liveness): Check if consensus reached
+    /// - n > 2: need >n/2 YES votes among at least 2n/3 distinct peers
+    /// - n ≤ 2: require unanimous YES votes
+    /// - Equality: use liveness_criteria_yes
     fn check_consensus(&mut self) -> ConsensusTransition {
-        let total_votes = self.votes.len();
-        let yes_votes = self.votes.values().filter(|v| v.vote).count();
+        let total_votes = self.votes.len() as u32;
+        let yes_votes = self.votes.values().filter(|v| v.vote).count() as u32;
         let no_votes = total_votes - yes_votes;
 
-        let expected_voters = self.proposal.expected_voters_count as usize;
-        let required_votes = self.count_required_votes();
+        let expected_voters = self.proposal.expected_voters_count;
+        let required_votes = calculate_required_votes(
+            self.proposal.expected_voters_count,
+            self.config.consensus_threshold,
+        );
+
         if total_votes >= required_votes {
-            if yes_votes > no_votes {
-                self.state = ConsensusState::ConsensusReached(true);
-                ConsensusTransition::ConsensusReached(true)
-            } else if no_votes > yes_votes {
-                self.state = ConsensusState::ConsensusReached(false);
-                ConsensusTransition::ConsensusReached(false)
-            } else if total_votes == expected_voters {
-                self.state = ConsensusState::ConsensusReached(self.config.liveness_criteria);
-                ConsensusTransition::ConsensusReached(self.config.liveness_criteria)
+            if expected_voters <= 2 {
+                // RFC Section 4: n ≤ 2 requires unanimous YES
+                if yes_votes == expected_voters && total_votes == expected_voters {
+                    self.state = ConsensusState::ConsensusReached(true);
+                    return ConsensusTransition::ConsensusReached(true);
+                } else if total_votes == expected_voters {
+                    self.state = ConsensusState::ConsensusReached(false);
+                    return ConsensusTransition::ConsensusReached(false);
+                }
             } else {
-                self.state = ConsensusState::Active;
-                ConsensusTransition::StillActive
+                // RFC Section 4: n > 2 requires >n/2 YES votes
+                let half_voters = expected_voters / 2;
+                if yes_votes > half_voters {
+                    self.state = ConsensusState::ConsensusReached(true);
+                    return ConsensusTransition::ConsensusReached(true);
+                } else if no_votes > half_voters {
+                    self.state = ConsensusState::ConsensusReached(false);
+                    return ConsensusTransition::ConsensusReached(false);
+                } else if total_votes == expected_voters {
+                    // RFC Section 4: Equality - use liveness criteria
+                    self.state =
+                        ConsensusState::ConsensusReached(self.proposal.liveness_criteria_yes);
+                    return ConsensusTransition::ConsensusReached(
+                        self.proposal.liveness_criteria_yes,
+                    );
+                }
             }
-        } else {
-            self.state = ConsensusState::Active;
-            ConsensusTransition::StillActive
         }
+
+        self.state = ConsensusState::Active;
+        ConsensusTransition::StillActive
     }
 
     pub fn is_active(&self) -> bool {
         matches!(self.state, ConsensusState::Active)
+    }
+
+    pub fn is_reached(&self) -> Option<bool> {
+        match self.state {
+            ConsensusState::ConsensusReached(result) => Some(result),
+            _ => None,
+        }
     }
 }

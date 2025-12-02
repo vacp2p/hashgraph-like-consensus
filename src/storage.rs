@@ -38,9 +38,26 @@ where
     ) -> Result<(), ConsensusError>;
 
     async fn list_scopes(&self) -> Result<Vec<Scope>, ConsensusError>;
+
+    async fn update_session<R, F>(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+        mutator: F,
+    ) -> Result<R, ConsensusError>
+    where
+        R: Send,
+        F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError> + Send;
+
+    async fn update_scope_sessions<F>(
+        &self,
+        scope: &Scope,
+        mutator: F,
+    ) -> Result<(), ConsensusError>
+    where
+        F: FnOnce(&mut Vec<ConsensusSession>) -> Result<(), ConsensusError> + Send;
 }
 
-/// In-memory implementation of [`ConsensusStorage`].
 pub struct InMemoryConsensusStorage<Scope>
 where
     Scope: ConsensusScope,
@@ -92,7 +109,7 @@ where
         let sessions = self.sessions.read().await;
         Ok(sessions
             .get(scope)
-            .and_then(|group| group.get(&proposal_id))
+            .and_then(|scope| scope.get(&proposal_id))
             .cloned())
     }
 
@@ -104,7 +121,7 @@ where
         let mut sessions = self.sessions.write().await;
         Ok(sessions
             .get_mut(scope)
-            .and_then(|group| group.remove(&proposal_id)))
+            .and_then(|scope| scope.remove(&proposal_id)))
     }
 
     async fn list_scope_sessions(
@@ -114,7 +131,7 @@ where
         let sessions = self.sessions.read().await;
         Ok(sessions
             .get(scope)
-            .map(|group| group.values().cloned().collect())
+            .map(|scope| scope.values().cloned().collect())
             .unwrap_or_default())
     }
 
@@ -135,5 +152,48 @@ where
     async fn list_scopes(&self) -> Result<Vec<Scope>, ConsensusError> {
         let sessions = self.sessions.read().await;
         Ok(sessions.keys().cloned().collect())
+    }
+
+    async fn update_session<R, F>(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+        mutator: F,
+    ) -> Result<R, ConsensusError>
+    where
+        R: Send,
+        F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError> + Send,
+    {
+        let mut sessions = self.sessions.write().await;
+        let session = sessions
+            .get_mut(scope)
+            .and_then(|scope_sessions| scope_sessions.get_mut(&proposal_id))
+            .ok_or(ConsensusError::SessionNotFound)?;
+
+        let result = mutator(session)?;
+        Ok(result)
+    }
+
+    async fn update_scope_sessions<F>(
+        &self,
+        scope: &Scope,
+        mutator: F,
+    ) -> Result<(), ConsensusError>
+    where
+        F: FnOnce(&mut Vec<ConsensusSession>) -> Result<(), ConsensusError> + Send,
+    {
+        let mut sessions = self.sessions.write().await;
+        let scope_sessions = sessions.entry(scope.clone()).or_insert_with(HashMap::new);
+
+        let mut sessions_vec: Vec<ConsensusSession> = scope_sessions.values().cloned().collect();
+        mutator(&mut sessions_vec)?;
+
+        let new_map: HashMap<u32, ConsensusSession> = sessions_vec
+            .into_iter()
+            .map(|session| (session.proposal.proposal_id, session))
+            .collect();
+
+        *scope_sessions = new_map;
+        Ok(())
     }
 }

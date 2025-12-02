@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     marker::PhantomData,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -10,12 +11,11 @@ use crate::{
     error::ConsensusError,
     events::{BroadcastEventBus, ConsensusEventBus},
     protos::consensus::v1::Proposal,
-    scope::{ConsensusScope, GroupId},
+    scope::{ConsensusScope, ScopeID},
     session::{ConsensusEvent, ConsensusSession, ConsensusState, ConsensusTransition},
     storage::{ConsensusStorage, InMemoryConsensusStorage},
     utils::{calculate_consensus_result, check_sufficient_votes},
 };
-/// Consensus service that manages multiple consensus sessions, optionally namespaced by scope.
 pub struct ConsensusService<Scope, S, E>
 where
     Scope: ConsensusScope,
@@ -44,9 +44,8 @@ where
     }
 }
 
-/// Default consensus service type using in-memory storage and tokio broadcast events.
 pub type DefaultConsensusService =
-    ConsensusService<GroupId, InMemoryConsensusStorage<GroupId>, BroadcastEventBus<GroupId>>;
+    ConsensusService<ScopeID, InMemoryConsensusStorage<ScopeID>, BroadcastEventBus<ScopeID>>;
 
 impl DefaultConsensusService {
     fn new() -> Self {
@@ -119,16 +118,12 @@ where
         mutator: F,
     ) -> Result<R, ConsensusError>
     where
-        F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError>,
+        R: Send,
+        F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError> + Send,
     {
-        let mut session = self
-            .storage
-            .get_session(scope, proposal_id)
-            .await?
-            .ok_or(ConsensusError::SessionNotFound)?;
-        let result = mutator(&mut session)?;
-        self.storage.save_session(scope, session).await?;
-        Ok(result)
+        self.storage
+            .update_session(scope, proposal_id, mutator)
+            .await
     }
 
     pub(crate) async fn save_session(
@@ -150,16 +145,33 @@ where
             .ok_or(ConsensusError::SessionNotFound)
     }
 
-    pub(crate) async fn enforce_scope_limit(&self, scope: &Scope) -> Result<(), ConsensusError> {
-        let mut sessions = self.storage.list_scope_sessions(scope).await?;
-        if sessions.len() <= self.max_sessions_per_scope {
-            return Ok(());
-        }
+    pub async fn check_sufficient_votes(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> Result<bool, ConsensusError> {
+        let session = self.get_session(scope, proposal_id).await?;
+        let total_votes = session.votes.len() as u32;
+        let expected_voters = session.proposal.expected_voters_count;
+        Ok(check_sufficient_votes(
+            total_votes,
+            expected_voters,
+            session.config.consensus_threshold,
+        ))
+    }
 
-        sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        sessions.truncate(self.max_sessions_per_scope);
-        self.storage.replace_scope_sessions(scope, sessions).await?;
-        Ok(())
+    pub(crate) async fn enforce_scope_limit(&self, scope: &Scope) -> Result<(), ConsensusError> {
+        self.storage
+            .update_scope_sessions(scope, |sessions| {
+                if sessions.len() <= self.max_sessions_per_scope {
+                    return Ok(());
+                }
+
+                sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                sessions.truncate(self.max_sessions_per_scope);
+                Ok(())
+            })
+            .await
     }
 
     pub(crate) async fn list_scope_sessions(
@@ -251,23 +263,37 @@ where
             .unwrap_or_default()
     }
 
-    pub async fn cleanup_expired_sessions(&self) {
-        if let Ok(scopes) = self.storage.list_scopes().await {
-            for scope in scopes {
-                if let Ok(mut sessions) = self.storage.list_scope_sessions(&scope).await {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Failed to get current time")
-                        .as_secs();
+    pub async fn get_reached_proposals(&self, scope: &Scope) -> HashMap<u32, Option<bool>> {
+        self.storage
+            .list_scope_sessions(scope)
+            .await
+            .map(|sessions| {
+                sessions
+                    .into_iter()
+                    .filter(|session| matches!(session.state, ConsensusState::ConsensusReached(_)))
+                    .map(|session| (session.proposal.proposal_id, session.is_reached()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub async fn cleanup_expired_sessions(&self) -> Result<(), ConsensusError> {
+        let scopes = self.storage.list_scopes().await?;
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+
+        for scope in scopes {
+            self.storage
+                .update_scope_sessions(&scope, |sessions| {
                     sessions.retain(|session| {
                         now <= session.proposal.expiration_time && session.is_active()
                     });
-                    if let Err(err) = self.storage.replace_scope_sessions(&scope, sessions).await {
-                        tracing::error!("Failed to cleanup sessions for scope {scope:?}: {err:?}");
-                    }
-                }
-            }
+                    Ok(())
+                })
+                .await?;
         }
+
+        Ok(())
     }
 
     pub async fn handle_consensus_timeout(
@@ -275,39 +301,54 @@ where
         scope: &Scope,
         proposal_id: u32,
     ) -> Result<bool, ConsensusError> {
-        let mut session = self
-            .storage
-            .get_session(scope, proposal_id)
-            .await?
-            .ok_or(ConsensusError::SessionNotFound)?;
+        let timeout_result: Result<Option<bool>, ConsensusError> = self
+            .update_session(scope, proposal_id, |session| {
+                if let ConsensusState::ConsensusReached(result) = session.state {
+                    return Ok(Some(result));
+                }
 
-        if let ConsensusState::ConsensusReached(result) = session.state {
-            return Ok(result);
+                let total_votes = session.votes.len() as u32;
+                let expected_voters = session.proposal.expected_voters_count;
+                if check_sufficient_votes(
+                    total_votes,
+                    expected_voters,
+                    session.config.consensus_threshold,
+                ) {
+                    let result = calculate_consensus_result(
+                        &session.votes,
+                        session.proposal.liveness_criteria_yes,
+                    );
+                    session.state = ConsensusState::ConsensusReached(result);
+                    Ok(Some(result))
+                } else {
+                    session.state = ConsensusState::Failed;
+                    Ok(None)
+                }
+            })
+            .await;
+
+        match timeout_result? {
+            Some(consensus_result) => {
+                self.emit_event(
+                    scope,
+                    ConsensusEvent::ConsensusReached {
+                        proposal_id,
+                        result: consensus_result,
+                    },
+                );
+                Ok(consensus_result)
+            }
+            None => {
+                let reason = "insufficient votes at timeout".to_string();
+                self.emit_event(
+                    scope,
+                    ConsensusEvent::ConsensusFailed {
+                        proposal_id,
+                        reason: reason.clone(),
+                    },
+                );
+                Err(ConsensusError::ConsensusFailed(reason))
+            }
         }
-
-        let total_votes = session.votes.len() as u32;
-        let expected_voters = session.proposal.expected_voters_count;
-        let result = if check_sufficient_votes(
-            total_votes,
-            expected_voters,
-            session.config.consensus_threshold,
-        ) {
-            calculate_consensus_result(&session.votes, session.proposal.liveness_criteria_yes)
-        } else {
-            session.proposal.liveness_criteria_yes
-        };
-
-        session.state = ConsensusState::ConsensusReached(result);
-        self.storage.save_session(scope, session).await?;
-
-        self.emit_event(
-            scope,
-            ConsensusEvent::ConsensusReached {
-                proposal_id,
-                result,
-            },
-        );
-
-        Ok(result)
     }
 }

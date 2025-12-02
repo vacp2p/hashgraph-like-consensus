@@ -3,7 +3,6 @@ use crate::{
     session::ConsensusState, storage::ConsensusStorage,
 };
 
-/// Statistics about consensus sessions within a scope.
 #[derive(Debug, Clone)]
 pub struct ConsensusStats {
     pub total_sessions: usize,

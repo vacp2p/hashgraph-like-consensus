@@ -12,6 +12,26 @@ use crate::{
     protos::consensus::v1::{Proposal, Vote},
 };
 
+/// Generate 32-bit ID from UUID using first 4 bytes with bit manipulation to avoid truncation collisions.
+pub fn generate_proposal_id() -> u32 {
+    let uuid = Uuid::new_v4();
+    let uuid_bytes = uuid.as_bytes();
+    ((uuid_bytes[0] as u32) << 24)
+        | ((uuid_bytes[1] as u32) << 16)
+        | ((uuid_bytes[2] as u32) << 8)
+        | (uuid_bytes[3] as u32)
+}
+
+/// Generate 32-bit ID from UUID using first 4 bytes with bit manipulation to avoid truncation collisions.
+pub fn generate_vote_id() -> u32 {
+    let uuid = Uuid::new_v4();
+    let uuid_bytes = uuid.as_bytes();
+    ((uuid_bytes[0] as u32) << 24)
+        | ((uuid_bytes[1] as u32) << 16)
+        | ((uuid_bytes[2] as u32) << 8)
+        | (uuid_bytes[3] as u32)
+}
+
 pub fn compute_vote_hash(vote: &Vote) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(vote.vote_id.to_le_bytes());
@@ -33,21 +53,28 @@ pub async fn create_vote_for_proposal<S: Signer + Sync>(
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
 
+    let voter_address = signer.address().as_slice().to_vec();
     let (parent_hash, received_hash) = if let Some(latest_vote) = proposal.votes.last() {
-        let is_same_voter = latest_vote.vote_owner == signer.address().as_slice().to_vec();
-        if is_same_voter {
-            // Same voter: parent_hash should be the hash of our previous vote
-            (latest_vote.vote_hash.clone(), Vec::new())
+        // RFC Section 2.4: Find voter's own last vote for parent_hash (may have other votes in between)
+        let own_last_vote = proposal
+            .votes
+            .iter()
+            .rev()
+            .find(|v| v.vote_owner == voter_address);
+
+        if let Some(own_vote) = own_last_vote {
+            (own_vote.vote_hash.clone(), latest_vote.vote_hash.clone())
         } else {
-            // Different voter: parent_hash is empty, received_hash is the hash of the latest vote
             (Vec::new(), latest_vote.vote_hash.clone())
         }
     } else {
         (Vec::new(), Vec::new())
     };
 
+    let vote_id = generate_vote_id();
+
     let mut vote = Vote {
-        vote_id: Uuid::new_v4().as_u128() as u32,
+        vote_id,
         vote_owner: signer.address().as_slice().to_vec(),
         proposal_id: proposal.proposal_id,
         timestamp: now,
@@ -84,13 +111,22 @@ pub fn verify_vote_hash(
         .map_err(|e| ConsensusError::InvalidSignature(e.to_string()))?;
     let address = signature
         .recover_address_from_msg(message)
-        .map_err(|e| ConsensusError::InvalidSignature(e.to_string()))?;
+        .map_err(|e| ConsensusError::InvalidAddress(e.to_string()))?;
     let address_bytes = address.as_slice().to_vec();
     Ok(address_bytes == public_key)
 }
 
 pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
+    // RFC Section 2.5.4
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    if now >= proposal.expiration_time {
+        return Err(ConsensusError::VoteExpired);
+    }
+
     for vote in proposal.votes.iter() {
+        if vote.proposal_id != proposal.proposal_id {
+            return Err(ConsensusError::VoteProposalIdMismatch);
+        }
         validate_vote(vote, proposal.expiration_time)?;
     }
     validate_vote_chain(&proposal.votes)?;
@@ -127,34 +163,56 @@ pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusE
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
+    // RFC Section 3.4: Reject future timestamps and votes older than 1 hour (replay attack protection)
     if vote.timestamp > now {
         return Err(ConsensusError::InvalidVoteTimestamp);
     }
+    const MAX_VOTE_AGE_SECONDS: u64 = 3600;
+    if now.saturating_sub(vote.timestamp) > MAX_VOTE_AGE_SECONDS {
+        return Err(ConsensusError::InvalidVoteTimestamp);
+    }
 
-    if now - vote.timestamp > expiration_time {
+    if vote.timestamp > expiration_time || now > expiration_time {
         return Err(ConsensusError::VoteExpired);
     }
 
     Ok(())
 }
 
-fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
+pub fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
     if votes.len() <= 1 {
         return Ok(());
     }
 
-    for i in 0..votes.len() - 1 {
-        let current_vote = &votes[i];
-        let next_vote = &votes[i + 1];
+    let mut hash_index: HashMap<&[u8], (&[u8], u64, usize)> = HashMap::new();
+    for (idx, vote) in votes.iter().enumerate() {
+        hash_index.insert(&vote.vote_hash, (&vote.vote_owner, vote.timestamp, idx));
+    }
 
-        if current_vote.vote_hash != next_vote.received_hash {
-            return Err(ConsensusError::ReceivedHashMismatch);
+    // RFC Section 2.3: received_hash must point to immediately previous vote
+    for (idx, vote) in votes.iter().enumerate() {
+        if idx > 0 {
+            let prev_vote = &votes[idx - 1];
+            if !vote.received_hash.is_empty() {
+                if vote.received_hash != prev_vote.vote_hash {
+                    return Err(ConsensusError::ReceivedHashMismatch);
+                }
+                if prev_vote.timestamp > vote.timestamp {
+                    return Err(ConsensusError::ReceivedHashMismatch);
+                }
+            }
         }
 
-        if current_vote.vote_owner == next_vote.vote_owner
-            && current_vote.vote_hash != next_vote.parent_hash
-        {
-            return Err(ConsensusError::ParentHashMismatch);
+        // RFC Section 2.3: parent_hash must point to voter's own previous vote (may have other votes in between)
+        if !vote.parent_hash.is_empty() {
+            match hash_index.get(&vote.parent_hash.as_slice()) {
+                Some((owner, ts, parent_idx))
+                    if *owner == vote.vote_owner.as_slice()
+                        && *ts <= vote.timestamp
+                        && *parent_idx < idx => {}
+                Some(_) => return Err(ConsensusError::ParentHashMismatch),
+                None => return Err(ConsensusError::ParentHashMismatch),
+            }
         }
     }
 
@@ -178,11 +236,14 @@ pub fn calculate_consensus_result(
     }
 }
 
-fn calculate_required_votes(expected_voters: u32, consensus_threshold: f64) -> u32 {
-    if expected_voters == 1 || expected_voters == 2 {
+pub fn calculate_required_votes(expected_voters: u32, consensus_threshold: f64) -> u32 {
+    // RFC Section 4: For n ≤ 2, require all votes. For n > 2, use threshold (default 2n/3)
+    if expected_voters <= 2 {
         expected_voters
+    } else if (consensus_threshold - (2.0 / 3.0)).abs() < f64::EPSILON {
+        (2 * expected_voters).div_ceil(3)
     } else {
-        ((expected_voters as f64) * consensus_threshold) as u32
+        ((expected_voters as f64) * consensus_threshold).ceil() as u32
     }
 }
 

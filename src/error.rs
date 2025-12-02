@@ -14,6 +14,10 @@ pub enum ConsensusError {
     InvalidVoteHash,
     #[error("Empty vote hash")]
     EmptyVoteHash,
+    #[error("Invalid proposal configuration: {0}")]
+    InvalidProposalConfiguration(String),
+    #[error("Vote proposal_id mismatch: vote belongs to different proposal")]
+    VoteProposalIdMismatch,
     #[error("Received hash mismatch")]
     ReceivedHashMismatch,
     #[error("Parent hash mismatch")]
@@ -36,6 +40,11 @@ pub enum ConsensusError {
     EmptySignature,
     #[error("Invalid signature: {0}")]
     InvalidSignature(String),
+    #[error("Invalid address: {0}")]
+    InvalidAddress(String),
+
+    #[error("Consensus failed: {0}")]
+    ConsensusFailed(String),
 
     #[error("Failed to get current time")]
     FailedToGetCurrentTime(#[from] std::time::SystemTimeError),

@@ -13,7 +13,6 @@ where
     fn publish(&self, scope: Scope, event: ConsensusEvent);
 }
 
-/// Tokio broadcast-based implementation of [`ConsensusEventBus`].
 #[derive(Clone)]
 pub struct BroadcastEventBus<Scope>
 where
