@@ -1,12 +1,12 @@
 use std::{fmt::Debug, hash::Hash};
 
-/// Marker trait describing a namespace that groups consensus sessions into a scope.
+/// A scope groups related proposals together.
 ///
-/// Any type that is clonable, hashable, and thread-safe can automatically act
-/// as a scope for the consensus service.
+/// Think of it like a namespace or category. For example, you might use a scope as group of users.
+/// Any type that can be used as a group of users can be used as a scope.
 pub trait ConsensusScope: Clone + Eq + Hash + Send + Sync + Debug + 'static {}
 
 impl<T> ConsensusScope for T where T: Clone + Eq + Hash + Send + Sync + Debug + 'static {}
 
-/// Default scope type used when working with simple string-based identifiers.
+/// A simple string-based scope identifier.
 pub type ScopeID = String;

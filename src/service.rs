@@ -16,6 +16,10 @@ use crate::{
     storage::{ConsensusStorage, InMemoryConsensusStorage},
     utils::{calculate_consensus_result, check_sufficient_votes},
 };
+/// The main service that handles proposals, votes, and consensus.
+///
+/// This is the main entry point for using the consensus service.
+/// It handles creating proposals, processing votes, and managing timeouts.
 pub struct ConsensusService<Scope, S, E>
 where
     Scope: ConsensusScope,
@@ -44,14 +48,23 @@ where
     }
 }
 
+/// A ready-to-use service with in-memory storage and broadcast events.
+///
+/// This is the easiest way to get started. It stores everything in memory (great for
+/// testing or single-node setups) and uses a simple broadcast channel for events.
+/// If you need persistence or custom event handling, use `ConsensusService` directly.
 pub type DefaultConsensusService =
     ConsensusService<ScopeID, InMemoryConsensusStorage<ScopeID>, BroadcastEventBus<ScopeID>>;
 
 impl DefaultConsensusService {
+    /// Create a service with default settings (10 max sessions per scope).
     fn new() -> Self {
         Self::new_with_max_sessions(10)
     }
 
+    /// Create a service with a custom limit on how many sessions can exist per scope.
+    ///
+    /// When the limit is reached, older sessions are automatically removed to make room.
     pub fn new_with_max_sessions(max_sessions_per_scope: usize) -> Self {
         Self::new_with_components(
             Arc::new(InMemoryConsensusStorage::new()),
@@ -73,6 +86,11 @@ where
     S: ConsensusStorage<Scope>,
     E: ConsensusEventBus<Scope>,
 {
+    /// Build a service with your own storage and event bus implementations.
+    ///
+    /// Use this when you need custom persistence (like a database) or event handling.
+    /// The `max_sessions_per_scope` parameter controls how many sessions can exist per scope
+    /// before old ones are automatically cleaned up.
     pub fn new_with_components(
         storage: Arc<S>,
         event_bus: E,
@@ -86,6 +104,11 @@ where
         }
     }
 
+    /// Subscribe to events like consensus reached or consensus failed.
+    ///
+    /// Returns a receiver that you can use to listen for events across all scopes.
+    /// Events are broadcast to all subscribers, so multiple parts of your application
+    /// can react to consensus outcomes.
     pub fn subscribe_to_events(&self) -> E::Receiver {
         self.event_bus.subscribe()
     }
@@ -145,6 +168,10 @@ where
             .ok_or(ConsensusError::SessionNotFound)
     }
 
+    /// Check if a proposal has collected enough votes to reach consensus.
+    ///
+    /// Returns `true` if the vote count meets the configured threshold (typically 2/3 of expected voters).
+    /// This doesn't mean consensus is reached yet - you still need to check the actual vote counts.
     pub async fn check_sufficient_votes(
         &self,
         scope: &Scope,
@@ -211,6 +238,10 @@ where
         });
     }
 
+    /// Change the consensus threshold for a specific proposal.
+    ///
+    /// The threshold is a fraction (0.0 to 1.0) of expected voters that must vote before consensus can be reached.
+    /// The default is 2/3 (about 0.667), which matches the RFC specification.
     pub async fn set_consensus_threshold_for_session(
         &self,
         scope: &Scope,
@@ -224,6 +255,10 @@ where
         .await
     }
 
+    /// Get the tie-breaker setting for a proposal.
+    ///
+    /// When votes are tied (equal yes and no), this determines the result.
+    /// Returns `Some(true)` if YES wins on ties, `Some(false)` if NO wins, or `None` if the proposal doesn't exist.
     pub async fn get_proposal_liveness_criteria(
         &self,
         scope: &Scope,
@@ -237,6 +272,10 @@ where
             .map(|session| session.proposal.liveness_criteria_yes)
     }
 
+    /// Get the final consensus result for a proposal, if it's been reached.
+    ///
+    /// Returns `Some(true)` if consensus was YES, `Some(false)` if NO, or `None` if
+    /// consensus hasn't been reached yet (or the proposal doesn't exist).
     pub async fn get_consensus_result(&self, scope: &Scope, proposal_id: u32) -> Option<bool> {
         self.storage
             .get_session(scope, proposal_id)
@@ -249,6 +288,9 @@ where
             })
     }
 
+    /// Get all proposals that are still accepting votes.
+    ///
+    /// Useful for showing users what they can vote on, or for monitoring active proposals.
     pub async fn get_active_proposals(&self, scope: &Scope) -> Vec<Proposal> {
         self.storage
             .list_scope_sessions(scope)
@@ -263,6 +305,10 @@ where
             .unwrap_or_default()
     }
 
+    /// Get all proposals that have reached consensus, along with their results.
+    ///
+    /// Returns a map from proposal ID to result (`Some(true)` for YES, `Some(false)` for NO).
+    /// Only includes proposals that have finalized - active proposals are not included.
     pub async fn get_reached_proposals(&self, scope: &Scope) -> HashMap<u32, Option<bool>> {
         self.storage
             .list_scope_sessions(scope)
@@ -277,6 +323,10 @@ where
             .unwrap_or_default()
     }
 
+    /// Clean up expired proposals across all scopes.
+    ///
+    /// Removes proposals that have passed their expiration time and are no longer active.
+    /// Call this periodically to keep your storage from growing indefinitely.
     pub async fn cleanup_expired_sessions(&self) -> Result<(), ConsensusError> {
         let scopes = self.storage.list_scopes().await?;
 
@@ -296,6 +346,8 @@ where
         Ok(())
     }
 
+    /// Handle the timeout for a proposal. If enough votes have been collected, consensus is reached.
+    /// Otherwise, the proposal is marked as failed.
     pub async fn handle_consensus_timeout(
         &self,
         scope: &Scope,

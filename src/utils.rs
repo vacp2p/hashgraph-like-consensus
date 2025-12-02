@@ -12,8 +12,11 @@ use crate::{
     protos::consensus::v1::{Proposal, Vote},
 };
 
-/// Generate 32-bit ID from UUID using first 4 bytes with bit manipulation to avoid truncation collisions.
-pub fn generate_proposal_id() -> u32 {
+/// Generate a unique 32-bit ID from a UUID.
+///
+/// Uses the first 4 bytes of a UUID with bit manipulation to create a unique identifier
+/// while avoiding collisions from simple truncation.
+pub fn generate_id() -> u32 {
     let uuid = Uuid::new_v4();
     let uuid_bytes = uuid.as_bytes();
     ((uuid_bytes[0] as u32) << 24)
@@ -22,16 +25,11 @@ pub fn generate_proposal_id() -> u32 {
         | (uuid_bytes[3] as u32)
 }
 
-/// Generate 32-bit ID from UUID using first 4 bytes with bit manipulation to avoid truncation collisions.
-pub fn generate_vote_id() -> u32 {
-    let uuid = Uuid::new_v4();
-    let uuid_bytes = uuid.as_bytes();
-    ((uuid_bytes[0] as u32) << 24)
-        | ((uuid_bytes[1] as u32) << 16)
-        | ((uuid_bytes[2] as u32) << 8)
-        | (uuid_bytes[3] as u32)
-}
-
+/// Compute the hash of a vote for signing and validation.
+///
+/// This creates a deterministic hash from all the vote's fields (ID, owner, proposal ID,
+/// timestamp, vote choice, and parent/received hashes). Everyone computes the same hash
+/// for the same vote, which is important for verification.
 pub fn compute_vote_hash(vote: &Vote) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(vote.vote_id.to_le_bytes());
@@ -44,6 +42,11 @@ pub fn compute_vote_hash(vote: &Vote) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
+/// Create a new vote for a proposal with proper hash chain linking.
+///
+/// This builds a vote that links to previous votes in the hashgraph structure.
+/// The vote is signed with the provided signer and includes all the necessary
+/// fields for validation (parent_hash, received_hash, vote_hash, signature).
 pub async fn create_vote_for_proposal<S: Signer + Sync>(
     proposal: &Proposal,
     user_vote: bool,
@@ -71,7 +74,7 @@ pub async fn create_vote_for_proposal<S: Signer + Sync>(
         (Vec::new(), Vec::new())
     };
 
-    let vote_id = generate_vote_id();
+    let vote_id = generate_id();
 
     let mut vote = Vote {
         vote_id,
@@ -95,6 +98,10 @@ pub async fn create_vote_for_proposal<S: Signer + Sync>(
     Ok(vote)
 }
 
+/// Verify that a vote's signature is valid and matches the vote owner.
+///
+/// Checks that the signature was created by the owner's private key and that
+/// it signs the correct vote data. Returns `true` if valid, `false` otherwise.
 pub fn verify_vote_hash(
     signature: &[u8],
     public_key: &[u8],
@@ -116,6 +123,11 @@ pub fn verify_vote_hash(
     Ok(address_bytes == public_key)
 }
 
+/// Validate a proposal and all its votes.
+///
+/// Checks that the proposal hasn't expired, all votes belong to this proposal,
+/// vote signatures are valid, and the vote chain (parent_hash/received_hash) is correct.
+/// This is what you call when receiving a proposal from the network.
 pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
     // RFC Section 2.5.4
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -133,6 +145,11 @@ pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
     Ok(())
 }
 
+/// Validate a single vote.
+///
+/// Checks that the vote hash is correct, the signature is valid, timestamps are reasonable
+/// (not in the future, not too old), and the vote hasn't expired. This prevents replay
+/// attacks and ensures vote integrity.
 pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusError> {
     if vote.vote_owner.is_empty() {
         return Err(ConsensusError::EmptyVoteOwner);
@@ -179,6 +196,11 @@ pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusE
     Ok(())
 }
 
+/// Validate that votes form a correct hashgraph chain.
+///
+/// Checks that each vote's `received_hash` points to the previous vote, and that
+/// each vote's `parent_hash` points to the voter's own previous vote (if they've voted before).
+/// This ensures votes are properly linked and can't be reordered or tampered with.
 pub fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
     if votes.len() <= 1 {
         return Ok(());
@@ -219,6 +241,10 @@ pub fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
     Ok(())
 }
 
+/// Calculate the consensus result from collected votes.
+///
+/// Returns `true` if YES wins, `false` if NO wins. If votes are tied, uses
+/// `liveness_criteria_yes` as the tie-breaker (RFC Section 4: Equality of votes).
 pub fn calculate_consensus_result(
     votes: &HashMap<Vec<u8>, Vote>,
     liveness_criteria_yes: bool,
@@ -247,6 +273,10 @@ pub fn calculate_required_votes(expected_voters: u32, consensus_threshold: f64) 
     }
 }
 
+/// Check if enough votes have been collected to potentially reach consensus.
+///
+/// This checks if the vote count meets the threshold, but doesn't determine the actual
+/// result. You still need to check if YES or NO has a majority.
 pub fn check_sufficient_votes(
     total_votes: u32,
     expected_voters: u32,

@@ -7,34 +7,47 @@ use crate::{
     error::ConsensusError,
     protos::consensus::v1::{Proposal, Vote},
     utils::{
-        calculate_required_votes, generate_proposal_id, validate_proposal, validate_vote,
+        calculate_required_votes, generate_id, validate_proposal, validate_vote,
         validate_vote_chain,
     },
 };
 
 #[derive(Debug, Clone)]
 pub enum ConsensusEvent {
+    /// Consensus was reached! The proposal has a final result (yes or no).
     ConsensusReached { proposal_id: u32, result: bool },
+    /// Consensus failed - not enough votes were collected before the timeout.
     ConsensusFailed { proposal_id: u32, reason: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsensusTransition {
+    /// Session remains active with no outcome yet.
     StillActive,
+    /// Session converged to a boolean result.
     ConsensusReached(bool),
 }
 
 #[derive(Debug, Clone)]
 pub struct CreateProposalRequest {
+    /// A short name for the proposal (e.g., "Upgrade to v2").
     pub name: String,
+    /// Additional details about what's being voted on.
     pub payload: String,
+    /// The address (public key bytes) of whoever created this proposal.
     pub proposal_owner: Vec<u8>,
+    /// How many people are expected to vote (used to calculate consensus threshold).
     pub expected_voters_count: u32,
+    /// How long until voting expires, in seconds from creation time.
     pub expiration_time: u64,
+    /// What happens if votes are tied: `true` means YES wins, `false` means NO wins.
     pub liveness_criteria_yes: bool,
 }
 
 impl CreateProposalRequest {
+    /// Create a new proposal request with validation.
+    ///
+    /// Returns an error if `expected_voters_count` is zero.
     pub fn new(
         name: String,
         payload: String,
@@ -59,8 +72,12 @@ impl CreateProposalRequest {
         Ok(request)
     }
 
+    /// Convert this request into an actual proposal.
+    ///
+    /// Generates a unique proposal ID and sets the creation timestamp. The proposal
+    /// starts with round 1 and no votes - votes will be added as people participate.
     pub fn into_proposal(self) -> Result<Proposal, ConsensusError> {
-        let proposal_id = generate_proposal_id();
+        let proposal_id = generate_id();
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
         Ok(Proposal {
@@ -80,13 +97,13 @@ impl CreateProposalRequest {
 
 #[derive(Debug, Clone)]
 pub struct ConsensusConfig {
-    /// Minimum number of votes required for consensus (as percentage of expected voters)
+    /// What fraction of expected voters must vote before consensus can be reached (default: 2/3).
     pub consensus_threshold: f64,
-    /// Timeout for consensus rounds in seconds
+    /// How long to wait (in seconds) before timing out if consensus isn't reached.
     pub consensus_timeout: u64,
-    /// Maximum number of rounds before consensus is considered failed
+    /// Maximum number of voting rounds before giving up (not currently enforced).
     pub max_rounds: u32,
-    /// Whether to use liveness criteria for silent peers
+    /// Whether to apply liveness criteria for peers that don't vote (not currently used).
     pub liveness_criteria: bool,
 }
 
@@ -103,18 +120,27 @@ impl Default for ConsensusConfig {
 
 #[derive(Debug, Clone)]
 pub enum ConsensusState {
+    /// Votes still accepted.
     Active,
+    /// Voting closed with a boolean result.
     ConsensusReached(bool),
+    /// Proposal expired before reaching consensus.
     Expired,
+    /// Consensus could not be determined (typically on timeout with insufficient votes).
     Failed,
 }
 
 #[derive(Debug, Clone)]
 pub struct ConsensusSession {
+    /// Current snapshot of the proposal including aggregated votes.
     pub proposal: Proposal,
+    /// Session state tracking whether voting is still open.
     pub state: ConsensusState,
+    /// Map of vote owner -> vote to enforce single vote per participant.
     pub votes: HashMap<Vec<u8>, Vote>, // vote_owner -> Vote
+    /// Seconds since Unix epoch when the session was created.
     pub created_at: u64,
+    /// Per-session runtime configuration.
     pub config: ConsensusConfig,
 }
 
@@ -269,10 +295,15 @@ impl ConsensusSession {
         ConsensusTransition::StillActive
     }
 
+    /// Check if this proposal is still accepting votes.
     pub fn is_active(&self) -> bool {
         matches!(self.state, ConsensusState::Active)
     }
 
+    /// Get the consensus result if one has been reached.
+    ///
+    /// Returns `Some(true)` for YES, `Some(false)` for NO, or `None` if consensus
+    /// hasn't been reached yet.
     pub fn is_reached(&self) -> Option<bool> {
         match self.state {
             ConsensusState::ConsensusReached(result) => Some(result),

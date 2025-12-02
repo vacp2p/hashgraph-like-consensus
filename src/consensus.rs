@@ -18,6 +18,10 @@ where
     S: ConsensusStorage<Scope>,
     E: ConsensusEventBus<Scope>,
 {
+    /// Create a new proposal and start the voting process.
+    ///
+    /// This creates the proposal, sets up a session to track votes, and schedules automatic
+    /// timeout handling. The proposal will expire after the time specified in the request.
     pub async fn create_proposal(
         &self,
         scope: &Scope,
@@ -35,7 +39,11 @@ where
         Ok(proposal)
     }
 
-    /// Cast a vote and return the signed vote (works for any participant).
+    /// Cast your vote on a proposal (yes or no).
+    ///
+    /// Your vote is cryptographically signed and linked to previous votes in the hashgraph.
+    /// Returns the signed vote, which you can then send to other peers in the network.
+    /// Each voter can only vote once per proposal.
     pub async fn cast_vote<SN: Signer + Sync>(
         &self,
         scope: &Scope,
@@ -69,7 +77,11 @@ where
         Ok(vote)
     }
 
-    /// Cast a vote and get the updated proposal snapshot. Useful immediately after creation.
+    /// Cast a vote and immediately get back the updated proposal with all votes.
+    ///
+    /// This is a convenience method that combines `cast_vote` and fetching the proposal.
+    /// Useful for proposal creator as they can immediately see the proposal with their vote
+    /// and share it with other peers.
     pub async fn cast_vote_and_get_proposal<SN: Signer + Sync>(
         &self,
         scope: &Scope,
@@ -82,6 +94,11 @@ where
         Ok(session.proposal)
     }
 
+    /// Process a proposal you received from another peer in the network.
+    ///
+    /// This validates the proposal and all its votes (signatures, vote chains, timestamps),
+    /// then stores it locally. If the proposal already has enough votes, consensus is reached
+    /// immediately and an event is emitted.
     pub async fn process_incoming_proposal(
         &self,
         scope: &Scope,
@@ -100,6 +117,11 @@ where
         Ok(())
     }
 
+    /// Process a vote you received from another peer.
+    ///
+    /// The vote is validated (signature, timestamp, vote chain) and added to the proposal.
+    /// If this vote brings the total to the consensus threshold, consensus is reached and
+    /// an event is emitted.
     pub async fn process_incoming_vote(
         &self,
         scope: &Scope,

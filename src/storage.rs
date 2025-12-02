@@ -3,6 +3,11 @@ use tokio::sync::RwLock;
 
 use crate::{error::ConsensusError, scope::ConsensusScope, session::ConsensusSession};
 
+/// Trait for storing and retrieving consensus sessions.
+///
+/// Implement this to use your own storage backend (database, file system, etc.).
+/// The default `InMemoryConsensusStorage` stores everything in RAM, which is fine
+/// for testing or single-node setups but won't persist across restarts.
 #[async_trait::async_trait]
 pub trait ConsensusStorage<Scope>: Send + Sync + 'static
 where
@@ -62,6 +67,7 @@ pub struct InMemoryConsensusStorage<Scope>
 where
     Scope: ConsensusScope,
 {
+    /// Scope -> proposal_id -> session map held in memory for tests and lightweight services.
     sessions: Arc<RwLock<HashMap<Scope, HashMap<u32, ConsensusSession>>>>,
 }
 

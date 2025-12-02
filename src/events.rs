@@ -2,14 +2,21 @@ use tokio::sync::broadcast;
 
 use crate::{scope::ConsensusScope, session::ConsensusEvent};
 
+/// Trait for broadcasting consensus events to subscribers.
+///
+/// Implement this to use your own event system (message queue, webhooks, etc.).
+/// The default `BroadcastEventBus` uses Tokio's broadcast channel, which works
+/// well for in-process event distribution.
 pub trait ConsensusEventBus<Scope>: Clone + Send + Sync + 'static
 where
     Scope: ConsensusScope,
 {
-    /// Type returned to consumers that subscribe to consensus events.
+    /// The type returned when subscribing to events.
     type Receiver;
 
+    /// Subscribe to receive consensus events from all scopes.
     fn subscribe(&self) -> Self::Receiver;
+    /// Publish an event for a specific scope.
     fn publish(&self, scope: Scope, event: ConsensusEvent);
 }
 
