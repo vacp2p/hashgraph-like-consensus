@@ -5,7 +5,7 @@ use tokio::{spawn, sync::Barrier, time::sleep};
 
 use hashgraph_like_consensus::{
     error::ConsensusError, scope::ScopeID, service::DefaultConsensusService,
-    session::CreateProposalRequest,
+    session::ConsensusConfig, types::CreateProposalRequest,
 };
 
 const SCOPE: &str = "concurrency_scope";
@@ -25,14 +25,17 @@ fn owner_bytes(signer: &PrivateKeySigner) -> Vec<u8> {
     signer.address().as_slice().to_vec()
 }
 
+// Verifies 10 parallel votes succeed under gossipsub and reach consensus;
 #[tokio::test]
 async fn test_concurrent_vote_casting() {
     let service = Arc::new(DefaultConsensusService::default());
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
 
+    // Use gossipsub mode (default) to allow all 10 votes in round 2
+    // P2P mode would limit to ceil(2*10/3) = 7 votes, but we need 10 votes for this test
     let proposal = service
-        .create_proposal(
+        .create_proposal_with_config(
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
@@ -43,6 +46,7 @@ async fn test_concurrent_vote_casting() {
                 true,
             )
             .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
         )
         .await
         .expect("proposal should be created");
@@ -77,7 +81,7 @@ async fn test_concurrent_vote_casting() {
     );
 }
 
-/// Test concurrent proposal creation and vote processing
+// Test concurrent proposal creation and vote processing
 #[tokio::test]
 async fn test_concurrent_proposal_operations() {
     let service = Arc::new(DefaultConsensusService::default());
@@ -90,7 +94,7 @@ async fn test_concurrent_proposal_operations() {
         let handle = spawn(async move {
             let proposal_owner = PrivateKeySigner::random();
             service_clone
-                .create_proposal(
+                .create_proposal_with_config(
                     &scope_clone,
                     CreateProposalRequest::new(
                         format!("Proposal {i}"),
@@ -101,6 +105,7 @@ async fn test_concurrent_proposal_operations() {
                         true,
                     )
                     .expect("valid proposal request"),
+                    Some(ConsensusConfig::gossipsub()),
                 )
                 .await
         });
@@ -118,7 +123,7 @@ async fn test_concurrent_proposal_operations() {
     );
 }
 
-/// Test that duplicate votes are properly rejected
+// Test that duplicate votes are properly rejected
 #[tokio::test]
 async fn test_concurrent_duplicate_vote_rejection() {
     let service = Arc::new(DefaultConsensusService::default());
@@ -127,7 +132,7 @@ async fn test_concurrent_duplicate_vote_rejection() {
     let voter = PrivateKeySigner::random();
 
     let proposal = service
-        .create_proposal(
+        .create_proposal_with_config(
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
@@ -138,6 +143,7 @@ async fn test_concurrent_duplicate_vote_rejection() {
                 true,
             )
             .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
         )
         .await
         .expect("proposal should be created");

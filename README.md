@@ -31,7 +31,7 @@ checking vote chains, managing timeouts, and determining when consensus is reach
 use hashgraph_like_consensus::{
     scope::ScopeID,
     service::DefaultConsensusService,
-    session::CreateProposalRequest,
+    types::CreateProposalRequest,
 };
 use alloy::signers::local::PrivateKeySigner;
 
@@ -60,9 +60,45 @@ async fn main() {
 
 ## API Overview
 
-The main type you'll work with is `ConsensusService` (or `DefaultConsensusService` for convenience).
-It handles everything: creating proposals, processing votes,
-managing timeouts, and determining when consensus is reached.
+### Configuring a Scope
+
+#### Scope vs Proposal Relationship
+
+``` bash
+Scope (Group/Channel)
+  ├── ScopeConfig (defaults for all proposals)
+  └── Proposals
+       ├── Proposal 1 → Session 1 (inherits scope config)
+       ├── Proposal 2 → Session 2 (inherits scope config)
+       └── Proposal 3 → Session 3 (overrides scope config)
+```
+
+Scopes carry defaults (network type, thresholds, timeouts)
+so you don't have to pass config on every proposal. Use the builder to initialize or update a scope:
+
+```rust
+use hashgraph_like_consensus::{
+    scope::ScopeID,
+    scope_config::NetworkType,
+    service::DefaultConsensusService,
+};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let service = DefaultConsensusService::default();
+let scope = ScopeID::from("team_votes");
+
+service
+    .scope(&scope)
+    .await?
+    .with_network_type(NetworkType::P2P)
+    .with_threshold(0.75)
+    .with_timeout(120)
+    .with_liveness_criteria(false)
+    .initialize()
+    .await?;
+# Ok(())
+# }
+```
 
 ### Creating a Service
 
@@ -120,6 +156,24 @@ let finalized = service.get_reached_proposals(&scope).await;
 let vote = service.cast_vote(&scope, proposal_id, true, signer).await?;
 ```
 
+**Vote and fetch proposal** - Useful for the creator who wants to gossip the updated proposal:
+
+```rust
+let proposal = service.cast_vote_and_get_proposal(&scope, proposal_id, true, signer).await?;
+```
+
+### Picking a config for your transport
+
+- Gossipsub (default): `ConsensusConfig::gossipsub()` enforces the RFC’s
+  two-round flow (round 1 = proposal, round 2 = everyone’s votes).
+- P2P: use `ConsensusConfig::p2p()` to derive the round cap dynamically (ceil(2n/3) of expected voters)
+  and advance one round per vote.
+
+Pass configs via `create_proposal_with_config` (or helper methods) when you need explicit control.
+Scope defaults are usually easier: set them once with
+`service.scope(&scope).await?.with_network_type(...)...initialize().await?`,
+then override per proposal only when needed.
+
 **Process incoming votes** - When you receive votes from other peers:
 
 ```rust
@@ -139,7 +193,9 @@ if let Some(result) = service.get_consensus_result(&scope, proposal_id).await {
 **Check vote count** - See if enough votes have been collected:
 
 ```rust
-let enough_votes = service.check_sufficient_votes(&scope, proposal_id).await?;
+let enough_votes = service
+    .has_sufficient_votes_for_proposal(&scope, proposal_id)
+    .await?;
 ```
 
 ### Events
@@ -147,6 +203,8 @@ let enough_votes = service.check_sufficient_votes(&scope, proposal_id).await?;
 **Subscribe to events** - Get notified when consensus is reached or fails:
 
 ```rust
+use hashgraph_like_consensus::types::ConsensusEvent;
+
 let mut receiver = service.subscribe_to_events();
 tokio::spawn(async move {
     while let Ok((scope, event)) = receiver.recv().await {
@@ -198,7 +256,10 @@ pub trait ConsensusEventBus<Scope> {
 - `validate_proposal()` - Check if a proposal and its votes are valid
 - `validate_vote()` - Verify a single vote's signature and structure
 - `validate_vote_chain()` - Ensure vote parent/received hash chains are correct
-- `calculate_consensus_result()` - Determine the result from collected votes
+- `has_sufficient_votes()` - Quick threshold check (count-based only)
+- `calculate_consensus_result(votes, expected_voters, consensus_threshold, liveness_criteria_yes)` -
+  Determine the result from collected votes (returns `Some(result)` when consensus is reached,
+  otherwise `None`), using the configured threshold and liveness rules
 
 ## Learn More
 

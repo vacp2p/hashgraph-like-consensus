@@ -47,14 +47,12 @@ pub fn compute_vote_hash(vote: &Vote) -> Vec<u8> {
 /// This builds a vote that links to previous votes in the hashgraph structure.
 /// The vote is signed with the provided signer and includes all the necessary
 /// fields for validation (parent_hash, received_hash, vote_hash, signature).
-pub async fn create_vote_for_proposal<S: Signer + Sync>(
+pub async fn build_vote<S: Signer + Sync>(
     proposal: &Proposal,
     user_vote: bool,
     signer: S,
 ) -> Result<Vote, ConsensusError> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
+    let now = current_timestamp()?;
 
     let voter_address = signer.address().as_slice().to_vec();
     let (parent_hash, received_hash) = if let Some(latest_vote) = proposal.votes.last() {
@@ -90,10 +88,7 @@ pub async fn create_vote_for_proposal<S: Signer + Sync>(
 
     vote.vote_hash = compute_vote_hash(&vote);
     let vote_bytes = vote.encode_to_vec();
-    let signature = signer
-        .sign_message(&vote_bytes)
-        .await
-        .map_err(|e| ConsensusError::InvalidSignature(e.to_string()))?;
+    let signature = signer.sign_message(&vote_bytes).await?;
     vote.signature = signature.as_bytes().to_vec();
     Ok(vote)
 }
@@ -114,23 +109,21 @@ pub fn verify_vote_hash(
                 expect: 65,
                 actual: signature.len(),
             })?;
-    let signature = Signature::from_raw_array(&signature_bytes)
-        .map_err(|e| ConsensusError::InvalidSignature(e.to_string()))?;
-    let address = signature
-        .recover_address_from_msg(message)
-        .map_err(|e| ConsensusError::InvalidAddress(e.to_string()))?;
+    let signature = Signature::from_raw_array(&signature_bytes)?;
+    let address = signature.recover_address_from_msg(message)?;
     let address_bytes = address.as_slice().to_vec();
     Ok(address_bytes == public_key)
 }
 
 /// Validate a proposal and all its votes.
 ///
-/// Checks that the proposal hasn't expired, all votes belong to this proposal,
-/// vote signatures are valid, and the vote chain (parent_hash/received_hash) is correct.
+/// RFC Section 2.5.4: Checks that the proposal hasn't expired.
+/// Also validates that all votes belong to this proposal, vote signatures are valid,
+/// and the vote chain (parent_hash/received_hash) is correct.
 /// This is what you call when receiving a proposal from the network.
 pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
-    // RFC Section 2.5.4
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    // RFC Section 2.5.4: Check proposal expiration
+    let now = current_timestamp()?;
     if now >= proposal.expiration_time {
         return Err(ConsensusError::VoteExpired);
     }
@@ -147,9 +140,9 @@ pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
 
 /// Validate a single vote.
 ///
-/// Checks that the vote hash is correct, the signature is valid, timestamps are reasonable
-/// (not in the future, not too old), and the vote hasn't expired. This prevents replay
-/// attacks and ensures vote integrity.
+/// RFC Section 3.4: Validates timestamps (reject future timestamps and votes older than 1 hour).
+/// Also checks that the vote hash is correct, the signature is valid, and the vote hasn't expired.
+/// This prevents replay attacks and ensures vote integrity.
 pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusError> {
     if vote.vote_owner.is_empty() {
         return Err(ConsensusError::EmptyVoteOwner);
@@ -178,7 +171,7 @@ pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusE
         return Err(ConsensusError::InvalidVoteSignature);
     }
 
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    let now = current_timestamp()?;
 
     // RFC Section 3.4: Reject future timestamps and votes older than 1 hour (replay attack protection)
     if vote.timestamp > now {
@@ -198,8 +191,8 @@ pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusE
 
 /// Validate that votes form a correct hashgraph chain.
 ///
-/// Checks that each vote's `received_hash` points to the previous vote, and that
-/// each vote's `parent_hash` points to the voter's own previous vote (if they've voted before).
+/// RFC Section 2.3: Validates that each vote's `received_hash` points to the immediately previous vote,
+/// and that each vote's `parent_hash` points to the voter's own previous vote (may have other votes in between).
 /// This ensures votes are properly linked and can't be reordered or tampered with.
 pub fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
     if votes.len() <= 1 {
@@ -243,41 +236,112 @@ pub fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
 
 /// Calculate the consensus result from collected votes.
 ///
+/// RFC Section 4 (Liveness): Determines consensus based on vote counts and liveness criteria.
 /// Returns `true` if YES wins, `false` if NO wins. If votes are tied, uses
 /// `liveness_criteria_yes` as the tie-breaker (RFC Section 4: Equality of votes).
 pub fn calculate_consensus_result(
     votes: &HashMap<Vec<u8>, Vote>,
+    expected_voters: u32,
+    consensus_threshold: f64,
     liveness_criteria_yes: bool,
-) -> bool {
+) -> Option<bool> {
     let total_votes = votes.len() as u32;
     let yes_votes = votes.values().filter(|v| v.vote).count() as u32;
-    let no_votes = total_votes - yes_votes;
+    let no_votes = total_votes.saturating_sub(yes_votes);
+    let silent_votes = expected_voters.saturating_sub(total_votes);
 
-    if yes_votes > no_votes {
-        true
-    } else if no_votes > yes_votes {
-        false
-    } else {
-        liveness_criteria_yes
+    if expected_voters <= 2 {
+        if total_votes < expected_voters {
+            return None;
+        }
+        return Some(yes_votes == expected_voters);
     }
+
+    let required_votes = calculate_required_votes(expected_voters, consensus_threshold);
+    if total_votes < required_votes {
+        return None;
+    }
+
+    let required_choice_votes = calculate_threshold_based_value(expected_voters, consensus_threshold);
+    let yes_weight = yes_votes + if liveness_criteria_yes { silent_votes } else { 0 };
+    let no_weight = no_votes + if liveness_criteria_yes { 0 } else { silent_votes };
+
+    if yes_weight >= required_choice_votes && yes_weight > no_weight {
+        return Some(true);
+    }
+
+    if no_weight >= required_choice_votes && no_weight > yes_weight {
+        return Some(false);
+    }
+
+    if total_votes == expected_voters && yes_weight == no_weight {
+        return Some(liveness_criteria_yes);
+    }
+
+    None
 }
 
 pub fn calculate_required_votes(expected_voters: u32, consensus_threshold: f64) -> u32 {
     // RFC Section 4: For n ≤ 2, require all votes. For n > 2, use threshold (default 2n/3)
     if expected_voters <= 2 {
         expected_voters
-    } else if (consensus_threshold - (2.0 / 3.0)).abs() < f64::EPSILON {
+    } else {
+        calculate_threshold_based_value(expected_voters, consensus_threshold)
+    }
+}
+
+pub fn calculate_max_rounds(expected_voters: u32, consensus_threshold: f64) -> u32 {
+    calculate_threshold_based_value(expected_voters, consensus_threshold)
+}
+
+/// Calculate a value based on threshold (shared logic for required votes and max rounds).
+fn calculate_threshold_based_value(expected_voters: u32, consensus_threshold: f64) -> u32 {
+    if (consensus_threshold - (2.0 / 3.0)).abs() < f64::EPSILON {
         (2 * expected_voters).div_ceil(3)
     } else {
         ((expected_voters as f64) * consensus_threshold).ceil() as u32
     }
 }
 
+pub(crate) fn current_timestamp() -> Result<u64, ConsensusError> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    Ok(now)
+}
+
+/// Validate that a consensus threshold is in the valid range [0.0, 1.0].
+pub fn validate_threshold(threshold: f64) -> Result<(), ConsensusError> {
+    if !(0.0..=1.0).contains(&threshold) {
+        return Err(ConsensusError::InvalidConsensusThreshold(
+            "consensus_threshold must be between 0.0 and 1.0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that a timeout is greater than 0.
+pub fn validate_timeout(timeout: u64) -> Result<(), ConsensusError> {
+    if timeout == 0 {
+        return Err(ConsensusError::InvalidProposalConfiguration(
+            "timeout must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_expected_voters_count(expected_voters_count: u32) -> Result<(), ConsensusError> {
+    if expected_voters_count == 0 {
+        return Err(ConsensusError::InvalidProposalConfiguration(
+            "expected_voters_count must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Check if enough votes have been collected to potentially reach consensus.
 ///
 /// This checks if the vote count meets the threshold, but doesn't determine the actual
 /// result. You still need to check if YES or NO has a majority.
-pub fn check_sufficient_votes(
+pub fn has_sufficient_votes(
     total_votes: u32,
     expected_voters: u32,
     consensus_threshold: f64,

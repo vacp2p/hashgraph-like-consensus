@@ -1,6 +1,6 @@
 use tokio::sync::broadcast;
 
-use crate::{scope::ConsensusScope, session::ConsensusEvent};
+use crate::{scope::ConsensusScope, types::ConsensusEvent};
 
 /// Trait for broadcasting consensus events to subscribers.
 ///
@@ -20,6 +20,11 @@ where
     fn publish(&self, scope: Scope, event: ConsensusEvent);
 }
 
+/// Default event bus implementation using Tokio's broadcast channel.
+///
+/// This broadcasts events to all subscribers within the same process. Events are sent
+/// to all active subscribers, and late subscribers miss events that occurred before
+/// they subscribed. Perfect for in-process event distribution.
 #[derive(Clone)]
 pub struct BroadcastEventBus<Scope>
 where
@@ -32,6 +37,10 @@ impl<Scope> BroadcastEventBus<Scope>
 where
     Scope: ConsensusScope,
 {
+    /// Create a new broadcast event bus with a custom buffer size.
+    ///
+    /// The buffer size determines how many events can be queued before subscribers
+    /// start missing events. Default is 1000.
     pub fn new(buffer: usize) -> Self {
         let (sender, _) = broadcast::channel(buffer);
         Self { sender }

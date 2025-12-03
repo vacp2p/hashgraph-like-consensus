@@ -1,120 +1,115 @@
-use std::{
-    collections::HashMap,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::collections::HashMap;
 
 use crate::{
     error::ConsensusError,
     protos::consensus::v1::{Proposal, Vote},
+    types::SessionTransition,
     utils::{
-        calculate_required_votes, generate_id, validate_proposal, validate_vote,
-        validate_vote_chain,
+        calculate_consensus_result, calculate_max_rounds, current_timestamp, validate_proposal,
+        validate_vote, validate_vote_chain,
     },
 };
 
 #[derive(Debug, Clone)]
-pub enum ConsensusEvent {
-    /// Consensus was reached! The proposal has a final result (yes or no).
-    ConsensusReached { proposal_id: u32, result: bool },
-    /// Consensus failed - not enough votes were collected before the timeout.
-    ConsensusFailed { proposal_id: u32, reason: String },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConsensusTransition {
-    /// Session remains active with no outcome yet.
-    StillActive,
-    /// Session converged to a boolean result.
-    ConsensusReached(bool),
-}
-
-#[derive(Debug, Clone)]
-pub struct CreateProposalRequest {
-    /// A short name for the proposal (e.g., "Upgrade to v2").
-    pub name: String,
-    /// Additional details about what's being voted on.
-    pub payload: String,
-    /// The address (public key bytes) of whoever created this proposal.
-    pub proposal_owner: Vec<u8>,
-    /// How many people are expected to vote (used to calculate consensus threshold).
-    pub expected_voters_count: u32,
-    /// How long until voting expires, in seconds from creation time.
-    pub expiration_time: u64,
-    /// What happens if votes are tied: `true` means YES wins, `false` means NO wins.
-    pub liveness_criteria_yes: bool,
-}
-
-impl CreateProposalRequest {
-    /// Create a new proposal request with validation.
-    ///
-    /// Returns an error if `expected_voters_count` is zero.
-    pub fn new(
-        name: String,
-        payload: String,
-        proposal_owner: Vec<u8>,
-        expected_voters_count: u32,
-        expiration_time: u64,
-        liveness_criteria_yes: bool,
-    ) -> Result<Self, ConsensusError> {
-        if expected_voters_count == 0 {
-            return Err(ConsensusError::InvalidProposalConfiguration(
-                "expected_voters_count must be greater than 0".to_string(),
-            ));
-        }
-        let request = Self {
-            name,
-            payload,
-            proposal_owner,
-            expected_voters_count,
-            expiration_time,
-            liveness_criteria_yes,
-        };
-        Ok(request)
-    }
-
-    /// Convert this request into an actual proposal.
-    ///
-    /// Generates a unique proposal ID and sets the creation timestamp. The proposal
-    /// starts with round 1 and no votes - votes will be added as people participate.
-    pub fn into_proposal(self) -> Result<Proposal, ConsensusError> {
-        let proposal_id = generate_id();
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-
-        Ok(Proposal {
-            name: self.name,
-            payload: self.payload,
-            proposal_id,
-            proposal_owner: self.proposal_owner,
-            votes: vec![],
-            expected_voters_count: self.expected_voters_count,
-            round: 1,
-            timestamp: now,
-            expiration_time: now + self.expiration_time,
-            liveness_criteria_yes: self.liveness_criteria_yes,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct ConsensusConfig {
     /// What fraction of expected voters must vote before consensus can be reached (default: 2/3).
-    pub consensus_threshold: f64,
+    consensus_threshold: f64,
     /// How long to wait (in seconds) before timing out if consensus isn't reached.
-    pub consensus_timeout: u64,
-    /// Maximum number of voting rounds before giving up (not currently enforced).
-    pub max_rounds: u32,
-    /// Whether to apply liveness criteria for peers that don't vote (not currently used).
-    pub liveness_criteria: bool,
+    consensus_timeout: u64,
+    /// Maximum number of voting rounds (vote increments) before giving up.
+    ///
+    /// Creation starts at round 1, so this caps the number of votes that can be processed.
+    /// Default (gossipsub) is 2 rounds; for P2P flows derive ceil(2n/3) via `ConsensusConfig::p2p()`.
+    max_rounds: u32,
+    /// Enable automatic two-round limit to mirror gossipsub behavior.
+    ///
+    /// When true, max_rounds limits the round number (round 1 = owner vote, round 2 = all other votes).
+    /// When false, max_rounds limits the vote count (each vote increments round).
+    use_gossipsub_rounds: bool,
+    /// Whether to apply liveness criteria for silent peers (count silent as YES/NO depending on this flag).
+    liveness_criteria: bool,
 }
 
-impl Default for ConsensusConfig {
-    fn default() -> Self {
+impl ConsensusConfig {
+    /// Default configuration for P2P transport: derive round cap as ceil(2n/3).
+    /// Max rounds is 0, so the round cap is calculated dynamically based on the expected voters count.
+    pub fn p2p() -> Self {
         Self {
-            consensus_threshold: 2.0 / 3.0, // RFC Section 4: 2n/3 threshold
+            consensus_threshold: 2.0 / 3.0,
             consensus_timeout: 10,
-            max_rounds: 3,
+            max_rounds: 0,
+            use_gossipsub_rounds: false,
             liveness_criteria: true,
         }
+    }
+
+    /// Default configuration for gossipsub: enforce two rounds.
+    pub fn gossipsub() -> Self {
+        Self {
+            max_rounds: 2,
+            use_gossipsub_rounds: true,
+            consensus_threshold: 2.0 / 3.0,
+            consensus_timeout: 10,
+            liveness_criteria: true,
+        }
+    }
+
+    pub fn set_up_rounds(&mut self, max_rounds: u32) -> Result<(), ConsensusError> {
+        if max_rounds == 0 {
+            return Err(ConsensusError::InvalidProposalConfiguration(
+                "max_rounds must be greater than 0".to_string(),
+            ));
+        }
+        self.max_rounds = max_rounds;
+        Ok(())
+    }
+
+    /// Create a new ConsensusConfig with the given values.
+    /// This is used internally for scope configuration conversion.
+    pub(crate) fn new(
+        consensus_threshold: f64,
+        consensus_timeout: u64,
+        max_rounds: u32,
+        use_gossipsub_rounds: bool,
+        liveness_criteria: bool,
+    ) -> Self {
+        Self {
+            consensus_threshold,
+            consensus_timeout,
+            max_rounds,
+            use_gossipsub_rounds,
+            liveness_criteria,
+        }
+    }
+
+    fn max_round_limit(&self, expected_voters_count: u32) -> u32 {
+        if self.use_gossipsub_rounds {
+            self.max_rounds
+        } else if self.max_rounds == 0 {
+            calculate_max_rounds(expected_voters_count, self.consensus_threshold)
+        } else {
+            self.max_rounds
+        }
+    }
+
+    pub fn consensus_timeout(&self) -> u64 {
+        self.consensus_timeout
+    }
+
+    pub fn consensus_threshold(&self) -> f64 {
+        self.consensus_threshold
+    }
+
+    pub fn liveness_criteria(&self) -> bool {
+        self.liveness_criteria
+    }
+
+    pub fn max_rounds(&self) -> u32 {
+        self.max_rounds
+    }
+
+    pub fn use_gossipsub_rounds(&self) -> bool {
+        self.use_gossipsub_rounds
     }
 }
 
@@ -147,13 +142,8 @@ pub struct ConsensusSession {
 impl ConsensusSession {
     /// Create a new session from a validated proposal (no votes).
     /// Used when creating proposals locally where we know the proposal is clean.
-    pub(crate) fn new(proposal: Proposal, config: ConsensusConfig) -> Self {
-        // Fallback to 0 if system time is before UNIX_EPOCH (should never happen)
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
-            .as_secs();
-
+    fn new(proposal: Proposal, config: ConsensusConfig) -> Self {
+        let now = current_timestamp().unwrap_or(0);
         Self {
             proposal,
             state: ConsensusState::Active,
@@ -166,17 +156,17 @@ impl ConsensusSession {
     /// Create a session from a proposal, validating the proposal and all votes.
     /// This validates the proposal structure, vote chain, and individual votes before creating the session.
     /// The session is created with votes already processed and rounds correctly set.
-    pub(crate) fn from_proposal(
+    pub fn from_proposal(
         proposal: Proposal,
         config: ConsensusConfig,
-    ) -> Result<(Self, ConsensusTransition), ConsensusError> {
+    ) -> Result<(Self, SessionTransition), ConsensusError> {
         validate_proposal(&proposal)?;
 
         // Create clean proposal for session (votes will be added via initialize_with_votes)
-        // RFC Section 1: Proposals start with round = 1 (proposal creation)
         let existing_votes = proposal.votes.clone();
         let mut clean_proposal = proposal.clone();
         clean_proposal.votes.clear();
+        // RFC Section 1: Proposals start with round = 1 (proposal creation)
         clean_proposal.round = 1;
 
         let mut session = Self::new(clean_proposal, config);
@@ -185,23 +175,31 @@ impl ConsensusSession {
         Ok((session, transition))
     }
 
-    pub(crate) fn set_consensus_threshold(&mut self, consensus_threshold: f64) {
-        self.config.consensus_threshold = consensus_threshold
-    }
-
-    pub(crate) fn add_vote(&mut self, vote: Vote) -> Result<ConsensusTransition, ConsensusError> {
+    /// Add a vote to the session.
+    pub(crate) fn add_vote(&mut self, vote: Vote) -> Result<SessionTransition, ConsensusError> {
         match self.state {
             ConsensusState::Active => {
+                // RFC Section 2.5.4: Check if proposal has expired
+                let now = current_timestamp()?;
+                if now >= self.proposal.expiration_time {
+                    self.state = ConsensusState::Expired;
+                    return Err(ConsensusError::VoteExpired);
+                }
+
+                // Check if adding this vote would exceed round limits
+                self.check_round_limit(1)?;
+
                 if self.votes.contains_key(&vote.vote_owner) {
                     return Err(ConsensusError::DuplicateVote);
                 }
                 self.votes.insert(vote.vote_owner.clone(), vote.clone());
                 self.proposal.votes.push(vote.clone());
-                // RFC Section 2.5.3
-                self.proposal.round += 1;
+
+                self.update_round(1);
                 Ok(self.check_consensus())
             }
-            ConsensusState::ConsensusReached(res) => Ok(ConsensusTransition::ConsensusReached(res)),
+            ConsensusState::ConsensusReached(res) => Ok(SessionTransition::ConsensusReached(res)),
+            ConsensusState::Expired => Err(ConsensusError::VoteExpired),
             _ => Err(ConsensusError::SessionNotActive),
         }
     }
@@ -212,13 +210,20 @@ impl ConsensusSession {
         &mut self,
         votes: Vec<Vote>,
         expiration_time: u64,
-    ) -> Result<ConsensusTransition, ConsensusError> {
+    ) -> Result<SessionTransition, ConsensusError> {
         if !matches!(self.state, ConsensusState::Active) {
             return Err(ConsensusError::SessionNotActive);
         }
 
+        // RFC Section 2.5.4: Check if proposal has expired
+        let now = current_timestamp()?;
+        if now >= expiration_time {
+            self.state = ConsensusState::Expired;
+            return Err(ConsensusError::VoteExpired);
+        }
+
         if votes.is_empty() {
-            return Ok(ConsensusTransition::StillActive);
+            return Ok(SessionTransition::StillActive);
         }
 
         let mut seen_owners = std::collections::HashSet::new();
@@ -233,71 +238,110 @@ impl ConsensusSession {
             validate_vote(vote, expiration_time)?;
         }
 
-        // RFC Section 1: Proposals start with round = 1 (proposal creation)
-        // RFC Section 2.5.3: Round increments for each vote
-        // So final round = 1 (creation) + vote_count
-        self.proposal.round = 1;
+        self.check_round_limit(votes.len())?;
+        self.update_round(votes.len());
+
         for vote in votes {
             self.votes.insert(vote.vote_owner.clone(), vote.clone());
             self.proposal.votes.push(vote);
-            self.proposal.round += 1;
         }
 
         Ok(self.check_consensus())
+    }
+
+    /// Check if adding votes would exceed round limits.
+    ///
+    /// Unifies logic for both single-vote and batch processing:
+    /// - For a single vote, pass `vote_count: 1`.
+    /// - For P2P: Calculates `(current_round - 1) + vote_count`.
+    /// - For Gossipsub: Moves to Round 2 if `vote_count > 0`.
+    fn check_round_limit(&mut self, vote_count: usize) -> Result<(), ConsensusError> {
+        // Determine the value to compare against the limit based on configuration
+        let projected_value = if self.config.use_gossipsub_rounds {
+            // Gossipsub Logic:
+            // RFC Section 2.5.3: Round 1 = proposal, Round 2 = all parallel votes.
+            // If we are already at Round 2, we stay there.
+            // If we are at Round 1 and adding ANY votes (> 0), we move to Round 2.
+            if self.proposal.round == 2 || (self.proposal.round == 1 && vote_count > 0) {
+                2
+            } else {
+                self.proposal.round // Stays at 1 if vote_count is 0, or handles edge cases
+            }
+        } else {
+            // P2P Logic:
+            // RFC Section 2.5.3: Round increments per vote.
+            // Current existing votes = round - 1.
+            // Projected total = Existing votes + New votes.
+            let current_votes = self.proposal.round.saturating_sub(1);
+            current_votes.saturating_add(vote_count as u32)
+        };
+
+        if projected_value
+            > self
+                .config
+                .max_round_limit(self.proposal.expected_voters_count)
+        {
+            self.state = ConsensusState::Failed;
+            return Err(ConsensusError::MaxRoundsExceeded);
+        }
+
+        Ok(())
+    }
+
+    /// Update round after adding votes.
+    ///
+    /// Unifies logic for round updates:
+    /// - Gossipsub: Moves from Round 1 -> 2 if adding votes. Stays at 2 otherwise.
+    /// - P2P: Adds the number of votes to the current round.
+    fn update_round(&mut self, vote_count: usize) {
+        if self.config.use_gossipsub_rounds {
+            // RFC Section 2.5.3: Gossipsub
+            // Round 1 = proposal creation.
+            // Round 2 = all subsequent votes.
+            // If we are at Round 1 and add ANY votes (>0), we promote to Round 2.
+            if self.proposal.round == 1 && vote_count > 0 {
+                self.proposal.round = 2;
+            }
+        } else {
+            // RFC Section 2.5.3: P2P
+            // Round increments for every vote added.
+            self.proposal.round = self.proposal.round.saturating_add(vote_count as u32);
+        }
     }
 
     /// RFC Section 4 (Liveness): Check if consensus reached
     /// - n > 2: need >n/2 YES votes among at least 2n/3 distinct peers
     /// - n ≤ 2: require unanimous YES votes
     /// - Equality: use liveness_criteria_yes
-    fn check_consensus(&mut self) -> ConsensusTransition {
-        let total_votes = self.votes.len() as u32;
-        let yes_votes = self.votes.values().filter(|v| v.vote).count() as u32;
-        let no_votes = total_votes - yes_votes;
-
+    fn check_consensus(&mut self) -> SessionTransition {
         let expected_voters = self.proposal.expected_voters_count;
-        let required_votes = calculate_required_votes(
-            self.proposal.expected_voters_count,
-            self.config.consensus_threshold,
-        );
+        let threshold = self.config.consensus_threshold;
+        let liveness = self.proposal.liveness_criteria_yes;
 
-        if total_votes >= required_votes {
-            if expected_voters <= 2 {
-                // RFC Section 4: n ≤ 2 requires unanimous YES
-                if yes_votes == expected_voters && total_votes == expected_voters {
-                    self.state = ConsensusState::ConsensusReached(true);
-                    return ConsensusTransition::ConsensusReached(true);
-                } else if total_votes == expected_voters {
-                    self.state = ConsensusState::ConsensusReached(false);
-                    return ConsensusTransition::ConsensusReached(false);
-                }
-            } else {
-                // RFC Section 4: n > 2 requires >n/2 YES votes
-                let half_voters = expected_voters / 2;
-                if yes_votes > half_voters {
-                    self.state = ConsensusState::ConsensusReached(true);
-                    return ConsensusTransition::ConsensusReached(true);
-                } else if no_votes > half_voters {
-                    self.state = ConsensusState::ConsensusReached(false);
-                    return ConsensusTransition::ConsensusReached(false);
-                } else if total_votes == expected_voters {
-                    // RFC Section 4: Equality - use liveness criteria
-                    self.state =
-                        ConsensusState::ConsensusReached(self.proposal.liveness_criteria_yes);
-                    return ConsensusTransition::ConsensusReached(
-                        self.proposal.liveness_criteria_yes,
-                    );
-                }
+        match calculate_consensus_result(&self.votes, expected_voters, threshold, liveness) {
+            Some(result) => {
+                self.state = ConsensusState::ConsensusReached(result);
+                SessionTransition::ConsensusReached(result)
+            }
+            None => {
+                self.state = ConsensusState::Active;
+                SessionTransition::StillActive
             }
         }
-
-        self.state = ConsensusState::Active;
-        ConsensusTransition::StillActive
     }
 
     /// Check if this proposal is still accepting votes.
     pub fn is_active(&self) -> bool {
         matches!(self.state, ConsensusState::Active)
+    }
+
+    /// Check if this proposal has expired.
+    /// RFC Section 2.5.4: Proposals expire at their expiration_time.
+    pub fn is_expired(&self) -> bool {
+        matches!(self.state, ConsensusState::Expired) || {
+            let now = current_timestamp().unwrap_or(0);
+            now >= self.proposal.expiration_time
+        }
     }
 
     /// Get the consensus result if one has been reached.
@@ -309,5 +353,105 @@ impl ConsensusSession {
             ConsensusState::ConsensusReached(result) => Some(result),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy::signers::local::PrivateKeySigner;
+
+    use crate::{
+        error::ConsensusError,
+        session::{ConsensusConfig, ConsensusSession},
+        types::CreateProposalRequest,
+        utils::build_vote,
+    };
+
+    #[tokio::test]
+    async fn enforce_max_rounds_gossipsub() {
+        // Gossipsub: max_rounds = 2 means round 1 (proposal) and round 2 (all votes)
+        // Should allow multiple votes in round 2, but not exceed round 2
+        let signer1 = PrivateKeySigner::random();
+        let signer2 = PrivateKeySigner::random();
+        let signer3 = PrivateKeySigner::random();
+        let signer4 = PrivateKeySigner::random();
+
+        let request = CreateProposalRequest::new(
+            "Test".into(),
+            "".into(),
+            signer1.address().as_slice().to_vec(),
+            4, // 4 expected voters
+            60,
+            false,
+        )
+        .unwrap();
+
+        let proposal = request.into_proposal().unwrap();
+        let mut config = ConsensusConfig::gossipsub();
+        config.set_up_rounds(2).unwrap();
+        let mut session = ConsensusSession::new(proposal, config);
+
+        // Round 1 -> Round 2 (first vote)
+        let vote1 = build_vote(&session.proposal, true, signer1).await.unwrap();
+        session.add_vote(vote1).unwrap();
+        assert_eq!(session.proposal.round, 2);
+
+        // Stay at round 2 (second vote)
+        let vote2 = build_vote(&session.proposal, false, signer2).await.unwrap();
+        session.add_vote(vote2).unwrap();
+        assert_eq!(session.proposal.round, 2);
+
+        // Stay at round 2 (third vote)
+        let vote3 = build_vote(&session.proposal, true, signer3).await.unwrap();
+        session.add_vote(vote3).unwrap();
+        assert_eq!(session.proposal.round, 2);
+
+        // Stay at round 2 (fourth vote) - should succeed
+        let vote4 = build_vote(&session.proposal, true, signer4).await.unwrap();
+        session.add_vote(vote4).unwrap();
+        assert_eq!(session.proposal.round, 2);
+        assert_eq!(session.votes.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn enforce_max_rounds_p2p() {
+        // P2P: max_rounds = 2 means maximum 2 votes
+        // Round 1 = 0 votes, Round 2 = 1 vote, Round 3 = 2 votes
+        // So max_rounds = 2 allows up to round 3 (2 votes)
+        let signer1 = PrivateKeySigner::random();
+        let signer2 = PrivateKeySigner::random();
+        let signer3 = PrivateKeySigner::random();
+
+        let request = CreateProposalRequest::new(
+            "Test".into(),
+            "".into(),
+            signer1.address().as_slice().to_vec(),
+            5,
+            60,
+            false,
+        )
+        .unwrap();
+
+        let proposal = request.into_proposal().unwrap();
+        let mut config = ConsensusConfig::p2p();
+        config.set_up_rounds(2).unwrap();
+        let mut session = ConsensusSession::new(proposal, config);
+
+        // Round 1 -> Round 2 (first vote, 1 vote total)
+        let vote1 = build_vote(&session.proposal, true, signer1).await.unwrap();
+        session.add_vote(vote1).unwrap();
+        assert_eq!(session.proposal.round, 2);
+        assert_eq!(session.votes.len(), 1);
+
+        // Round 2 -> Round 3 (second vote, 2 votes total) - should succeed
+        let vote2 = build_vote(&session.proposal, false, signer2).await.unwrap();
+        session.add_vote(vote2).unwrap();
+        assert_eq!(session.proposal.round, 3);
+        assert_eq!(session.votes.len(), 2);
+
+        // Third vote would be round 4 (3 votes total), which exceeds max_rounds = 2
+        let vote3 = build_vote(&session.proposal, true, signer3).await.unwrap();
+        let err = session.add_vote(vote3).unwrap_err();
+        assert!(matches!(err, ConsensusError::MaxRoundsExceeded));
     }
 }

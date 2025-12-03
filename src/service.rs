@@ -1,9 +1,4 @@
-use std::{
-    collections::HashMap,
-    marker::PhantomData,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 use tokio::time::{Duration, sleep};
 use tracing::info;
 
@@ -12,9 +7,11 @@ use crate::{
     events::{BroadcastEventBus, ConsensusEventBus},
     protos::consensus::v1::Proposal,
     scope::{ConsensusScope, ScopeID},
-    session::{ConsensusEvent, ConsensusSession, ConsensusState, ConsensusTransition},
+    scope_config::{NetworkType, ScopeConfig, ScopeConfigBuilder},
+    session::{ConsensusConfig, ConsensusSession, ConsensusState},
     storage::{ConsensusStorage, InMemoryConsensusStorage},
-    utils::{calculate_consensus_result, check_sufficient_votes},
+    types::{ConsensusEvent, SessionTransition},
+    utils::{calculate_consensus_result, current_timestamp, has_sufficient_votes},
 };
 /// The main service that handles proposals, votes, and consensus.
 ///
@@ -89,8 +86,8 @@ where
     /// Build a service with your own storage and event bus implementations.
     ///
     /// Use this when you need custom persistence (like a database) or event handling.
-    /// The `max_sessions_per_scope` parameter controls how many sessions can exist per scope
-    /// before old ones are automatically cleaned up.
+    /// The `max_sessions_per_scope` parameter controls how many sessions can exist per scope.
+    /// When the limit is reached, older sessions are automatically removed.
     pub fn new_with_components(
         storage: Arc<S>,
         event_bus: E,
@@ -113,165 +110,6 @@ where
         self.event_bus.subscribe()
     }
 
-    fn emit_event(&self, scope: &Scope, event: ConsensusEvent) {
-        self.event_bus.publish(scope.clone(), event);
-    }
-
-    pub(crate) fn handle_transition(
-        &self,
-        scope: &Scope,
-        proposal_id: u32,
-        transition: ConsensusTransition,
-    ) {
-        if let ConsensusTransition::ConsensusReached(result) = transition {
-            self.emit_event(
-                scope,
-                ConsensusEvent::ConsensusReached {
-                    proposal_id,
-                    result,
-                },
-            );
-        }
-    }
-
-    pub(crate) async fn update_session<R, F>(
-        &self,
-        scope: &Scope,
-        proposal_id: u32,
-        mutator: F,
-    ) -> Result<R, ConsensusError>
-    where
-        R: Send,
-        F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError> + Send,
-    {
-        self.storage
-            .update_session(scope, proposal_id, mutator)
-            .await
-    }
-
-    pub(crate) async fn save_session(
-        &self,
-        scope: &Scope,
-        session: ConsensusSession,
-    ) -> Result<(), ConsensusError> {
-        self.storage.save_session(scope, session).await
-    }
-
-    pub(crate) async fn get_session(
-        &self,
-        scope: &Scope,
-        proposal_id: u32,
-    ) -> Result<ConsensusSession, ConsensusError> {
-        self.storage
-            .get_session(scope, proposal_id)
-            .await?
-            .ok_or(ConsensusError::SessionNotFound)
-    }
-
-    /// Check if a proposal has collected enough votes to reach consensus.
-    ///
-    /// Returns `true` if the vote count meets the configured threshold (typically 2/3 of expected voters).
-    /// This doesn't mean consensus is reached yet - you still need to check the actual vote counts.
-    pub async fn check_sufficient_votes(
-        &self,
-        scope: &Scope,
-        proposal_id: u32,
-    ) -> Result<bool, ConsensusError> {
-        let session = self.get_session(scope, proposal_id).await?;
-        let total_votes = session.votes.len() as u32;
-        let expected_voters = session.proposal.expected_voters_count;
-        Ok(check_sufficient_votes(
-            total_votes,
-            expected_voters,
-            session.config.consensus_threshold,
-        ))
-    }
-
-    pub(crate) async fn enforce_scope_limit(&self, scope: &Scope) -> Result<(), ConsensusError> {
-        self.storage
-            .update_scope_sessions(scope, |sessions| {
-                if sessions.len() <= self.max_sessions_per_scope {
-                    return Ok(());
-                }
-
-                sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-                sessions.truncate(self.max_sessions_per_scope);
-                Ok(())
-            })
-            .await
-    }
-
-    pub(crate) async fn list_scope_sessions(
-        &self,
-        scope: &Scope,
-    ) -> Result<Vec<ConsensusSession>, ConsensusError> {
-        self.storage.list_scope_sessions(scope).await
-    }
-
-    pub(crate) fn spawn_timeout_task(&self, scope: Scope, proposal_id: u32, timeout_seconds: u64) {
-        let service = self.clone();
-        Self::spawn_timeout_task_owned(service, scope, proposal_id, timeout_seconds);
-    }
-
-    fn spawn_timeout_task_owned(
-        service: ConsensusService<Scope, S, E>,
-        scope: Scope,
-        proposal_id: u32,
-        timeout_seconds: u64,
-    ) {
-        tokio::spawn(async move {
-            sleep(Duration::from_secs(timeout_seconds)).await;
-
-            if service
-                .get_consensus_result(&scope, proposal_id)
-                .await
-                .is_some()
-            {
-                return;
-            }
-
-            if let Ok(result) = service.handle_consensus_timeout(&scope, proposal_id).await {
-                info!(
-                    "Automatic timeout applied for proposal {proposal_id} in scope {scope:?} after {timeout_seconds}s => {result}"
-                );
-            }
-        });
-    }
-
-    /// Change the consensus threshold for a specific proposal.
-    ///
-    /// The threshold is a fraction (0.0 to 1.0) of expected voters that must vote before consensus can be reached.
-    /// The default is 2/3 (about 0.667), which matches the RFC specification.
-    pub async fn set_consensus_threshold_for_session(
-        &self,
-        scope: &Scope,
-        proposal_id: u32,
-        consensus_threshold: f64,
-    ) -> Result<(), ConsensusError> {
-        self.update_session(scope, proposal_id, |session| {
-            session.set_consensus_threshold(consensus_threshold);
-            Ok(())
-        })
-        .await
-    }
-
-    /// Get the tie-breaker setting for a proposal.
-    ///
-    /// When votes are tied (equal yes and no), this determines the result.
-    /// Returns `Some(true)` if YES wins on ties, `Some(false)` if NO wins, or `None` if the proposal doesn't exist.
-    pub async fn get_proposal_liveness_criteria(
-        &self,
-        scope: &Scope,
-        proposal_id: u32,
-    ) -> Option<bool> {
-        self.storage
-            .get_session(scope, proposal_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|session| session.proposal.liveness_criteria_yes)
-    }
-
     /// Get the final consensus result for a proposal, if it's been reached.
     ///
     /// Returns `Some(true)` if consensus was YES, `Some(false)` if NO, or `None` if
@@ -289,8 +127,6 @@ where
     }
 
     /// Get all proposals that are still accepting votes.
-    ///
-    /// Useful for showing users what they can vote on, or for monitoring active proposals.
     pub async fn get_active_proposals(&self, scope: &Scope) -> Vec<Proposal> {
         self.storage
             .list_scope_sessions(scope)
@@ -323,31 +159,129 @@ where
             .unwrap_or_default()
     }
 
-    /// Clean up expired proposals across all scopes.
+    /// Check if a proposal has collected enough votes to reach consensus.
+    pub async fn has_sufficient_votes_for_proposal(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> Result<bool, ConsensusError> {
+        let session = self.get_session(scope, proposal_id).await?;
+        let total_votes = session.votes.len() as u32;
+        let expected_voters = session.proposal.expected_voters_count;
+        Ok(has_sufficient_votes(
+            total_votes,
+            expected_voters,
+            session.config.consensus_threshold(),
+        ))
+    }
+
+    // Scope management methods
+
+    /// Get a builder for a scope configuration.
     ///
-    /// Removes proposals that have passed their expiration time and are no longer active.
-    /// Call this periodically to keep your storage from growing indefinitely.
-    pub async fn cleanup_expired_sessions(&self) -> Result<(), ConsensusError> {
-        let scopes = self.storage.list_scopes().await?;
+    /// # Example
+    /// ```rust,no_run
+    /// use hashgraph_like_consensus::{scope_config::NetworkType, scope::ScopeID, service::DefaultConsensusService};
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let service = DefaultConsensusService::default();
+    /// let scope = ScopeID::from("my_scope");
+    ///
+    /// // Initialize new scope
+    /// service
+    ///     .scope(&scope)
+    ///     .await?
+    ///     .with_network_type(NetworkType::P2P)
+    ///     .with_threshold(0.75)
+    ///     .with_timeout(120)
+    ///     .initialize()
+    ///     .await?;
+    ///
+    /// // Update existing scope (single field)
+    /// service
+    ///     .scope(&scope)
+    ///     .await?
+    ///     .with_threshold(0.8)
+    ///     .update()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn scope(
+        &self,
+        scope: &Scope,
+    ) -> Result<ScopeConfigBuilderWrapper<Scope, S, E>, ConsensusError> {
+        let existing_config = self.storage.get_scope_config(scope).await?;
+        let builder = if let Some(config) = existing_config {
+            ScopeConfigBuilder::from_existing(config)
+        } else {
+            ScopeConfigBuilder::new()
+        };
+        Ok(ScopeConfigBuilderWrapper::new(
+            self.clone(),
+            scope.clone(),
+            builder,
+        ))
+    }
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    async fn initialize_scope(
+        &self,
+        scope: &Scope,
+        config: ScopeConfig,
+    ) -> Result<(), ConsensusError> {
+        config.validate()?;
+        self.storage.set_scope_config(scope, config).await
+    }
 
-        for scope in scopes {
-            self.storage
-                .update_scope_sessions(&scope, |sessions| {
-                    sessions.retain(|session| {
-                        now <= session.proposal.expiration_time && session.is_active()
-                    });
-                    Ok(())
-                })
-                .await?;
+    async fn update_scope_config<F>(&self, scope: &Scope, updater: F) -> Result<(), ConsensusError>
+    where
+        F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError> + Send,
+    {
+        self.storage.update_scope_config(scope, updater).await
+    }
+
+    /// Resolve configuration for a proposal.
+    ///
+    /// Priority: proposal override > proposal fields (expiration_time, liveness_criteria_yes)
+    ///   > scope config > global default
+    pub(crate) async fn resolve_config(
+        &self,
+        scope: &Scope,
+        proposal_override: Option<ConsensusConfig>,
+        proposal: Option<&crate::protos::consensus::v1::Proposal>,
+    ) -> Result<ConsensusConfig, ConsensusError> {
+        // 1. If explicit config override exists, use it as base
+        let base_config = if let Some(override_config) = proposal_override {
+            override_config
+        } else if let Some(scope_config) = self.storage.get_scope_config(scope).await? {
+            scope_config.into_consensus_config()
+        } else {
+            ConsensusConfig::gossipsub()
+        };
+
+        // 2. Apply proposal field overrides if proposal is provided
+        if let Some(prop) = proposal {
+            // Calculate timeout from expiration_time (absolute timestamp) - timestamp (creation time)
+            let timeout_seconds = if prop.expiration_time > prop.timestamp {
+                prop.expiration_time - prop.timestamp
+            } else {
+                base_config.consensus_timeout()
+            };
+
+            Ok(ConsensusConfig::new(
+                base_config.consensus_threshold(),
+                timeout_seconds,
+                base_config.max_rounds(),
+                base_config.use_gossipsub_rounds(),
+                prop.liveness_criteria_yes,
+            ))
+        } else {
+            Ok(base_config)
         }
-
-        Ok(())
     }
 
     /// Handle the timeout for a proposal. If enough votes have been collected, consensus is reached.
-    /// Otherwise, the proposal is marked as failed.
+    /// If the proposal has expired, it's marked as expired. Otherwise, it's marked as failed.
     pub async fn handle_consensus_timeout(
         &self,
         scope: &Scope,
@@ -359,17 +293,21 @@ where
                     return Ok(Some(result));
                 }
 
-                let total_votes = session.votes.len() as u32;
-                let expected_voters = session.proposal.expected_voters_count;
-                if check_sufficient_votes(
-                    total_votes,
-                    expected_voters,
-                    session.config.consensus_threshold,
-                ) {
-                    let result = calculate_consensus_result(
-                        &session.votes,
-                        session.proposal.liveness_criteria_yes,
-                    );
+                // RFC Section 2.5.4: Check if proposal has expired
+                let now = current_timestamp()?;
+                if now >= session.proposal.expiration_time {
+                    session.state = ConsensusState::Expired;
+                    return Ok(None);
+                }
+
+                let result = calculate_consensus_result(
+                    &session.votes,
+                    session.proposal.expected_voters_count,
+                    session.config.consensus_threshold(),
+                    session.proposal.liveness_criteria_yes,
+                );
+
+                if let Some(result) = result {
                     session.state = ConsensusState::ConsensusReached(result);
                     Ok(Some(result))
                 } else {
@@ -402,5 +340,253 @@ where
                 Err(ConsensusError::ConsensusFailed(reason))
             }
         }
+    }
+
+    /// Clean up expired proposals across all scopes.
+    ///
+    /// RFC Section 2.5.4: Removes proposals that have passed their expiration time and are no longer active.
+    /// Call this periodically to keep your storage from growing indefinitely.
+    pub async fn cleanup_expired_sessions(&self) -> Result<(), ConsensusError> {
+        let scopes = self.storage.list_scopes().await?;
+
+        let now = current_timestamp()?;
+
+        for scope in scopes {
+            self.storage
+                .update_scope_sessions(&scope, |sessions| {
+                    for session in sessions.iter_mut() {
+                        // RFC Section 2.5.4: Mark expired sessions
+                        if now >= session.proposal.expiration_time
+                            && matches!(session.state, ConsensusState::Active)
+                        {
+                            session.state = ConsensusState::Expired;
+                        }
+                    }
+                    sessions.retain(|session| !session.is_expired());
+                    Ok(())
+                })
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn get_session(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> Result<ConsensusSession, ConsensusError> {
+        self.storage
+            .get_session(scope, proposal_id)
+            .await?
+            .ok_or(ConsensusError::SessionNotFound)
+    }
+
+    pub(crate) async fn update_session<R, F>(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+        mutator: F,
+    ) -> Result<R, ConsensusError>
+    where
+        R: Send,
+        F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError> + Send,
+    {
+        self.storage
+            .update_session(scope, proposal_id, mutator)
+            .await
+    }
+
+    pub(crate) async fn save_session(
+        &self,
+        scope: &Scope,
+        session: ConsensusSession,
+    ) -> Result<(), ConsensusError> {
+        self.storage.save_session(scope, session).await
+    }
+
+    pub(crate) async fn trim_scope_sessions(&self, scope: &Scope) -> Result<(), ConsensusError> {
+        self.storage
+            .update_scope_sessions(scope, |sessions| {
+                if sessions.len() <= self.max_sessions_per_scope {
+                    return Ok(());
+                }
+
+                sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                sessions.truncate(self.max_sessions_per_scope);
+                Ok(())
+            })
+            .await
+    }
+
+    pub(crate) async fn list_scope_sessions(
+        &self,
+        scope: &Scope,
+    ) -> Result<Vec<ConsensusSession>, ConsensusError> {
+        self.storage.list_scope_sessions(scope).await
+    }
+
+    pub(crate) fn handle_transition(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+        transition: SessionTransition,
+    ) {
+        if let SessionTransition::ConsensusReached(result) = transition {
+            self.emit_event(
+                scope,
+                ConsensusEvent::ConsensusReached {
+                    proposal_id,
+                    result,
+                },
+            );
+        }
+    }
+
+    pub(crate) fn spawn_timeout_task(&self, scope: Scope, proposal_id: u32, timeout_seconds: u64) {
+        let service = self.clone();
+        Self::spawn_timeout_task_owned(service, scope, proposal_id, timeout_seconds);
+    }
+
+    fn spawn_timeout_task_owned(
+        service: ConsensusService<Scope, S, E>,
+        scope: Scope,
+        proposal_id: u32,
+        timeout_seconds: u64,
+    ) {
+        tokio::spawn(async move {
+            sleep(Duration::from_secs(timeout_seconds)).await;
+
+            if service
+                .get_consensus_result(&scope, proposal_id)
+                .await
+                .is_some()
+            {
+                return;
+            }
+
+            if let Ok(result) = service.handle_consensus_timeout(&scope, proposal_id).await {
+                info!(
+                    "Automatic timeout applied for proposal {proposal_id} in scope {scope:?} after {timeout_seconds}s => {result}"
+                );
+            }
+        });
+    }
+
+    fn emit_event(&self, scope: &Scope, event: ConsensusEvent) {
+        self.event_bus.publish(scope.clone(), event);
+    }
+}
+
+/// Wrapper around ScopeConfigBuilder that stores service and scope for convenience methods.
+pub struct ScopeConfigBuilderWrapper<Scope, S, E>
+where
+    Scope: ConsensusScope,
+    S: ConsensusStorage<Scope>,
+    E: ConsensusEventBus<Scope>,
+{
+    service: ConsensusService<Scope, S, E>,
+    scope: Scope,
+    builder: ScopeConfigBuilder,
+}
+
+impl<Scope, S, E> ScopeConfigBuilderWrapper<Scope, S, E>
+where
+    Scope: ConsensusScope,
+    S: ConsensusStorage<Scope>,
+    E: ConsensusEventBus<Scope>,
+{
+    fn new(
+        service: ConsensusService<Scope, S, E>,
+        scope: Scope,
+        builder: ScopeConfigBuilder,
+    ) -> Self {
+        Self {
+            service,
+            scope,
+            builder,
+        }
+    }
+
+    /// Set network type (P2P or Gossipsub)
+    pub fn with_network_type(mut self, network_type: NetworkType) -> Self {
+        self.builder = self.builder.with_network_type(network_type);
+        self
+    }
+
+    /// Set consensus threshold (0.0 to 1.0)
+    pub fn with_threshold(mut self, threshold: f64) -> Self {
+        self.builder = self.builder.with_threshold(threshold);
+        self
+    }
+
+    /// Set default timeout for proposals (in seconds)
+    pub fn with_timeout(mut self, timeout: u64) -> Self {
+        self.builder = self.builder.with_timeout(timeout);
+        self
+    }
+
+    /// Set liveness criteria (how silent peers are counted)
+    pub fn with_liveness_criteria(mut self, liveness_criteria_yes: bool) -> Self {
+        self.builder = self.builder.with_liveness_criteria(liveness_criteria_yes);
+        self
+    }
+
+    /// Override max rounds (if None, uses network_type defaults)
+    pub fn with_max_rounds(mut self, max_rounds: Option<u32>) -> Self {
+        self.builder = self.builder.with_max_rounds(max_rounds);
+        self
+    }
+
+    /// Use P2P preset with common defaults
+    pub fn p2p_preset(mut self) -> Self {
+        self.builder = self.builder.p2p_preset();
+        self
+    }
+
+    /// Use Gossipsub preset with common defaults
+    pub fn gossipsub_preset(mut self) -> Self {
+        self.builder = self.builder.gossipsub_preset();
+        self
+    }
+
+    /// Use strict consensus (higher threshold = 0.9)
+    pub fn strict_consensus(mut self) -> Self {
+        self.builder = self.builder.strict_consensus();
+        self
+    }
+
+    /// Use fast consensus (lower threshold = 0.6, shorter timeout = 30s)
+    pub fn fast_consensus(mut self) -> Self {
+        self.builder = self.builder.fast_consensus();
+        self
+    }
+
+    /// Start with network-specific defaults
+    pub fn with_network_defaults(mut self, network_type: NetworkType) -> Self {
+        self.builder = self.builder.with_network_defaults(network_type);
+        self
+    }
+
+    /// Initialize scope with the built configuration
+    pub async fn initialize(self) -> Result<(), ConsensusError> {
+        let config = self.builder.build()?;
+        self.service.initialize_scope(&self.scope, config).await
+    }
+
+    /// Update existing scope configuration with the built configuration
+    pub async fn update(self) -> Result<(), ConsensusError> {
+        let config = self.builder.build()?;
+        self.service
+            .update_scope_config(&self.scope, |existing| {
+                *existing = config;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Get the current configuration (useful for testing)
+    pub fn get_config(&self) -> ScopeConfig {
+        self.builder.get_config()
     }
 }

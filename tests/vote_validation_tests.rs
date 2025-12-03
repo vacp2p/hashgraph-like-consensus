@@ -6,8 +6,9 @@ use hashgraph_like_consensus::{
     error::ConsensusError,
     scope::ScopeID,
     service::DefaultConsensusService,
-    session::CreateProposalRequest,
-    utils::{compute_vote_hash, create_vote_for_proposal, validate_proposal},
+    session::ConsensusConfig,
+    types::CreateProposalRequest,
+    utils::{compute_vote_hash, build_vote, validate_proposal},
 };
 
 const SCOPE: &str = "validation_scope";
@@ -33,7 +34,7 @@ async fn test_vote_created_with_helper_is_valid() {
     let proposal_owner = PrivateKeySigner::random();
 
     let proposal = service
-        .create_proposal(
+        .create_proposal_with_config(
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
@@ -44,6 +45,7 @@ async fn test_vote_created_with_helper_is_valid() {
                 true,
             )
             .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
         )
         .await
         .expect("proposal");
@@ -54,7 +56,7 @@ async fn test_vote_created_with_helper_is_valid() {
         .expect("proposal_owner vote");
 
     let voter = PrivateKeySigner::random();
-    let vote = create_vote_for_proposal(&proposal, VOTE_YES, voter)
+    let vote = build_vote(&proposal, VOTE_YES, voter)
         .await
         .expect("vote should be created");
 
@@ -71,7 +73,7 @@ async fn test_invalid_signature_is_rejected() {
     let proposal_owner = PrivateKeySigner::random();
 
     let proposal = service
-        .create_proposal(
+        .create_proposal_with_config(
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
@@ -82,6 +84,7 @@ async fn test_invalid_signature_is_rejected() {
                 true,
             )
             .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
         )
         .await
         .expect("proposal");
@@ -92,7 +95,7 @@ async fn test_invalid_signature_is_rejected() {
         .expect("proposal_owner vote");
 
     let voter = PrivateKeySigner::random();
-    let mut vote = create_vote_for_proposal(&proposal, VOTE_YES, voter)
+    let mut vote = build_vote(&proposal, VOTE_YES, voter)
         .await
         .expect("vote");
 
@@ -121,7 +124,7 @@ async fn test_vote_chain_validation_rejects_bad_received_hash() {
     let proposal_owner = PrivateKeySigner::random();
 
     let proposal = service
-        .create_proposal(
+        .create_proposal_with_config(
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
@@ -132,6 +135,7 @@ async fn test_vote_chain_validation_rejects_bad_received_hash() {
                 true,
             )
             .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
         )
         .await
         .expect("proposal");
@@ -144,10 +148,10 @@ async fn test_vote_chain_validation_rejects_bad_received_hash() {
     let voter_one = PrivateKeySigner::random();
     let voter_two = PrivateKeySigner::random();
 
-    let vote_one = create_vote_for_proposal(&proposal, VOTE_YES, voter_one)
+    let vote_one = build_vote(&proposal, VOTE_YES, voter_one)
         .await
         .expect("vote one");
-    let mut vote_two = create_vote_for_proposal(&proposal, VOTE_NO, voter_two.clone())
+    let mut vote_two = build_vote(&proposal, VOTE_NO, voter_two.clone())
         .await
         .expect("vote two");
 

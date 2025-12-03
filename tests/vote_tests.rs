@@ -3,8 +3,9 @@ use alloy::signers::local::PrivateKeySigner;
 use hashgraph_like_consensus::{
     scope::ScopeID,
     service::DefaultConsensusService,
-    session::CreateProposalRequest,
-    utils::{create_vote_for_proposal, validate_proposal},
+    session::ConsensusConfig,
+    types::CreateProposalRequest,
+    utils::{build_vote, validate_proposal},
 };
 
 const SCOPE: &str = "vote_scope";
@@ -28,17 +29,15 @@ async fn test_received_hash_for_new_voter() {
     let proposal_owner = PrivateKeySigner::random();
 
     let proposal = service
-        .create_proposal(
-            &scope,
-            CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+        .create_proposal_with_config(&scope, CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(), PROPOSAL_PAYLOAD.to_string(),
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT,
                 EXPIRATION,
                 true,
             )
             .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
         )
         .await
         .expect("proposal");
@@ -49,7 +48,7 @@ async fn test_received_hash_for_new_voter() {
         .expect("proposal_owner vote");
 
     let other_voter = PrivateKeySigner::random();
-    let vote = create_vote_for_proposal(&proposal, VOTE_YES, other_voter)
+    let vote = build_vote(&proposal, VOTE_YES, other_voter)
         .await
         .expect("second vote");
 
@@ -74,17 +73,15 @@ async fn test_parent_hash_for_same_voter() {
     let proposal_owner = PrivateKeySigner::random();
 
     let proposal = service
-        .create_proposal(
-            &scope,
-            CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+        .create_proposal_with_config(&scope, CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(), PROPOSAL_PAYLOAD.to_string(),
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT,
                 EXPIRATION,
                 true,
             )
             .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
         )
         .await
         .expect("proposal");
@@ -100,7 +97,7 @@ async fn test_parent_hash_for_same_voter() {
         .expect("proposal_owner vote");
 
     // Create a second vote from the same voter to exercise parent_hash logic.
-    let second_vote = create_vote_for_proposal(&proposal, VOTE_NO, proposal_owner)
+    let second_vote = build_vote(&proposal, VOTE_NO, proposal_owner)
         .await
         .expect("second vote");
 

@@ -1,7 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
-use crate::{error::ConsensusError, scope::ConsensusScope, session::ConsensusSession};
+use crate::{
+    error::ConsensusError,
+    scope::ConsensusScope,
+    scope_config::ScopeConfig,
+    session::ConsensusSession,
+};
 
 /// Trait for storing and retrieving consensus sessions.
 ///
@@ -61,14 +66,37 @@ where
     ) -> Result<(), ConsensusError>
     where
         F: FnOnce(&mut Vec<ConsensusSession>) -> Result<(), ConsensusError> + Send;
+
+    /// Get scope configuration (defaults for proposals in this scope)
+    async fn get_scope_config(&self, scope: &Scope) -> Result<Option<ScopeConfig>, ConsensusError>;
+
+    /// Set scope configuration
+    async fn set_scope_config(
+        &self,
+        scope: &Scope,
+        config: ScopeConfig,
+    ) -> Result<(), ConsensusError>;
+
+    /// Update scope configuration
+    async fn update_scope_config<F>(
+        &self,
+        scope: &Scope,
+        updater: F,
+    ) -> Result<(), ConsensusError>
+    where
+        F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError> + Send;
 }
 
+/// In-memory storage for consensus sessions.
+///
+/// Stores all sessions in RAM using a hash map. This is the default storage implementation
+/// and works well for testing or single-node setups. Data is lost when the process exits.
 pub struct InMemoryConsensusStorage<Scope>
 where
     Scope: ConsensusScope,
 {
-    /// Scope -> proposal_id -> session map held in memory for tests and lightweight services.
     sessions: Arc<RwLock<HashMap<Scope, HashMap<u32, ConsensusSession>>>>,
+    scope_configs: Arc<RwLock<HashMap<Scope, ScopeConfig>>>,
 }
 
 impl<Scope> Default for InMemoryConsensusStorage<Scope>
@@ -78,6 +106,7 @@ where
     fn default() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            scope_configs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -86,6 +115,10 @@ impl<Scope> InMemoryConsensusStorage<Scope>
 where
     Scope: ConsensusScope,
 {
+    /// Create a new in-memory storage instance.
+    ///
+    /// This stores all consensus sessions in RAM. Perfect for testing or single-node setups,
+    /// but data won't persist across restarts.
     pub fn new() -> Self {
         Self::default()
     }
@@ -194,12 +227,48 @@ where
         let mut sessions_vec: Vec<ConsensusSession> = scope_sessions.values().cloned().collect();
         mutator(&mut sessions_vec)?;
 
+        if sessions_vec.is_empty() {
+            sessions.remove(scope);
+            return Ok(());
+        }
+
         let new_map: HashMap<u32, ConsensusSession> = sessions_vec
             .into_iter()
             .map(|session| (session.proposal.proposal_id, session))
             .collect();
 
         *scope_sessions = new_map;
+        Ok(())
+    }
+
+    async fn get_scope_config(&self, scope: &Scope) -> Result<Option<ScopeConfig>, ConsensusError> {
+        let configs = self.scope_configs.read().await;
+        Ok(configs.get(scope).cloned())
+    }
+
+    async fn set_scope_config(
+        &self,
+        scope: &Scope,
+        config: ScopeConfig,
+    ) -> Result<(), ConsensusError> {
+        config.validate()?;
+        let mut configs = self.scope_configs.write().await;
+        configs.insert(scope.clone(), config);
+        Ok(())
+    }
+
+    async fn update_scope_config<F>(
+        &self,
+        scope: &Scope,
+        updater: F,
+    ) -> Result<(), ConsensusError>
+    where
+        F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError> + Send,
+    {
+        let mut configs = self.scope_configs.write().await;
+        let config = configs.entry(scope.clone()).or_insert_with(ScopeConfig::default);
+        updater(config)?;
+        config.validate()?;
         Ok(())
     }
 }

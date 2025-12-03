@@ -1,3 +1,5 @@
+use alloy::primitives::SignatureError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConsensusError {
     #[error("Mismatched length: expected {expect}, actual {actual}")]
@@ -39,12 +41,18 @@ pub enum ConsensusError {
     #[error("Empty signature")]
     EmptySignature,
     #[error("Invalid signature: {0}")]
-    InvalidSignature(String),
+    InvalidSignature(#[from] SignatureError),
+    #[error("Failed to sign message: {0}")]
+    FailedToSignMessage(#[from] alloy_signer::Error),
     #[error("Invalid address: {0}")]
     InvalidAddress(String),
 
     #[error("Consensus failed: {0}")]
     ConsensusFailed(String),
+    #[error("Consensus exceeded configured max rounds")]
+    MaxRoundsExceeded,
+    #[error("Invalid consensus threshold: {0}")]
+    InvalidConsensusThreshold(String),
 
     #[error("Failed to get current time")]
     FailedToGetCurrentTime(#[from] std::time::SystemTimeError),

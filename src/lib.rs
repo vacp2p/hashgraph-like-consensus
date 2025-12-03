@@ -23,12 +23,14 @@ pub mod protos {
     }
 }
 
-pub mod consensus;
 pub mod error;
 pub mod events;
 pub mod scope;
+pub mod scope_config;
 pub mod service;
+pub mod service_consensus;
+pub mod service_stats;
 pub mod session;
-pub mod stats;
 pub mod storage;
+pub mod types;
 pub mod utils;
