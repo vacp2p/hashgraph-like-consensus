@@ -2,9 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
 use crate::{
-    error::ConsensusError,
-    scope::ConsensusScope,
-    scope_config::ScopeConfig,
+    error::ConsensusError, scope::ConsensusScope, scope_config::ScopeConfig,
     session::ConsensusSession,
 };
 
@@ -78,11 +76,7 @@ where
     ) -> Result<(), ConsensusError>;
 
     /// Update scope configuration
-    async fn update_scope_config<F>(
-        &self,
-        scope: &Scope,
-        updater: F,
-    ) -> Result<(), ConsensusError>
+    async fn update_scope_config<F>(&self, scope: &Scope, updater: F) -> Result<(), ConsensusError>
     where
         F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError> + Send;
 }
@@ -257,16 +251,14 @@ where
         Ok(())
     }
 
-    async fn update_scope_config<F>(
-        &self,
-        scope: &Scope,
-        updater: F,
-    ) -> Result<(), ConsensusError>
+    async fn update_scope_config<F>(&self, scope: &Scope, updater: F) -> Result<(), ConsensusError>
     where
         F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError> + Send,
     {
         let mut configs = self.scope_configs.write().await;
-        let config = configs.entry(scope.clone()).or_insert_with(ScopeConfig::default);
+        let config = configs
+            .entry(scope.clone())
+            .or_insert_with(ScopeConfig::default);
         updater(config)?;
         config.validate()?;
         Ok(())

@@ -202,3 +202,49 @@ async fn test_scope_config_new_scope_uses_defaults() {
     assert_eq!(config.default_timeout, 60);
     assert!(config.default_liveness_criteria_yes);
 }
+
+#[tokio::test]
+async fn test_max_rounds_override_zero_validation() {
+    let service = DefaultConsensusService::default();
+    let scope_p2p = ScopeID::from("p2p_zero_rounds");
+    let scope_gossipsub = ScopeID::from("gossipsub_zero_rounds");
+
+    // Test that max_rounds_override = Some(0) is allowed for P2P networks
+    // (0 triggers dynamic calculation based on consensus threshold)
+    let result = service
+        .scope(&scope_p2p)
+        .await
+        .unwrap()
+        .with_network_type(NetworkType::P2P)
+        .with_max_rounds(Some(0))
+        .initialize()
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "max_rounds_override = Some(0) should be allowed for P2P networks"
+    );
+
+    let config = service.scope(&scope_p2p).await.unwrap().get_config();
+    assert_eq!(config.max_rounds_override, Some(0));
+    assert_eq!(config.network_type, NetworkType::P2P);
+
+    // Test that max_rounds_override = Some(0) is rejected for Gossipsub networks
+    let result = service
+        .scope(&scope_gossipsub)
+        .await
+        .unwrap()
+        .with_network_type(NetworkType::Gossipsub)
+        .with_max_rounds(Some(0))
+        .initialize()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "max_rounds_override = Some(0) should be rejected for Gossipsub networks"
+    );
+    assert!(matches!(
+        result.unwrap_err(),
+        ConsensusError::InvalidProposalConfiguration(_)
+    ));
+}

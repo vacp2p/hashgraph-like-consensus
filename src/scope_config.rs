@@ -67,11 +67,14 @@ impl ScopeConfig {
     pub fn validate(&self) -> Result<(), ConsensusError> {
         crate::utils::validate_threshold(self.default_consensus_threshold)?;
         crate::utils::validate_timeout(self.default_timeout)?;
+        // Allow max_rounds_override = Some(0) only for P2P networks (triggers dynamic calculation)
+        // For Gossipsub networks, max_rounds_override must be greater than 0
         if let Some(max_rounds) = self.max_rounds_override
             && max_rounds == 0
+            && self.network_type == NetworkType::Gossipsub
         {
             return Err(ConsensusError::InvalidProposalConfiguration(
-                "max_rounds_override must be greater than 0".to_string(),
+                "max_rounds_override must be greater than 0 for Gossipsub networks".to_string(),
             ));
         }
         Ok(())

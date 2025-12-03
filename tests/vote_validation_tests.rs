@@ -8,7 +8,7 @@ use hashgraph_like_consensus::{
     service::DefaultConsensusService,
     session::ConsensusConfig,
     types::CreateProposalRequest,
-    utils::{compute_vote_hash, build_vote, validate_proposal},
+    utils::{build_vote, compute_vote_hash, validate_proposal},
 };
 
 const SCOPE: &str = "validation_scope";
@@ -95,9 +95,7 @@ async fn test_invalid_signature_is_rejected() {
         .expect("proposal_owner vote");
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, voter)
-        .await
-        .expect("vote");
+    let mut vote = build_vote(&proposal, VOTE_YES, voter).await.expect("vote");
 
     let wrong_signer = PrivateKeySigner::random();
     let vote_bytes = vote.encode_to_vec();

@@ -29,8 +29,11 @@ async fn test_received_hash_for_new_voter() {
     let proposal_owner = PrivateKeySigner::random();
 
     let proposal = service
-        .create_proposal_with_config(&scope, CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(), PROPOSAL_PAYLOAD.to_string(),
+        .create_proposal_with_config(
+            &scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD.to_string(),
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT,
                 EXPIRATION,
@@ -73,8 +76,11 @@ async fn test_parent_hash_for_same_voter() {
     let proposal_owner = PrivateKeySigner::random();
 
     let proposal = service
-        .create_proposal_with_config(&scope, CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(), PROPOSAL_PAYLOAD.to_string(),
+        .create_proposal_with_config(
+            &scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD.to_string(),
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT,
                 EXPIRATION,

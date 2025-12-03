@@ -33,8 +33,11 @@ async fn test_basic_consensus_flow() {
     let proposal_owner = PrivateKeySigner::random();
 
     let proposal = service
-        .create_proposal_with_config(&scope, CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(), PROPOSAL_PAYLOAD.to_string(),
+        .create_proposal_with_config(
+            &scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD.to_string(),
                 proposal_owner_from_signer(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 PROPOSAL_EXPIRATION_TIME,
@@ -91,8 +94,11 @@ async fn test_multi_scope_isolation() {
     let signer2 = PrivateKeySigner::random();
 
     let proposal_1 = service
-        .create_proposal_with_config(&scope1, CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(), PROPOSAL_PAYLOAD.to_string(),
+        .create_proposal_with_config(
+            &scope1,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD.to_string(),
                 proposal_owner_from_signer(&signer1),
                 EXPECTED_VOTERS_COUNT_2,
                 PROPOSAL_EXPIRATION_TIME,
@@ -110,8 +116,11 @@ async fn test_multi_scope_isolation() {
         .expect("scope1 proposal_owner vote");
 
     let proposal_2 = service
-        .create_proposal_with_config(&scope2, CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(), PROPOSAL_PAYLOAD.to_string(),
+        .create_proposal_with_config(
+            &scope2,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD.to_string(),
                 proposal_owner_from_signer(&signer2),
                 EXPECTED_VOTERS_COUNT_1,
                 PROPOSAL_EXPIRATION_TIME,
@@ -148,8 +157,11 @@ async fn test_consensus_threshold_emits_event() {
     let proposal_owner = PrivateKeySigner::random();
 
     let proposal = service
-        .create_proposal_with_config(&scope, CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(), PROPOSAL_PAYLOAD.to_string(),
+        .create_proposal_with_config(
+            &scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD.to_string(),
                 proposal_owner_from_signer(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_4,
                 PROPOSAL_EXPIRATION_TIME,

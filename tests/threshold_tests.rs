@@ -96,18 +96,12 @@ fn test_calculate_consensus_result_variants() {
     votes.insert(vec![3], yes_vote(3));
     votes.insert(vec![4], no_vote(4));
     votes.insert(vec![5], no_vote(5));
-    assert_eq!(
-        calculate_consensus_result(&votes, 5, 0.9, true),
-        None
-    );
+    assert_eq!(calculate_consensus_result(&votes, 5, 0.9, true), None);
 
     // Fast threshold resolves early
     votes.clear();
     votes.insert(vec![1], yes_vote(1));
     votes.insert(vec![2], yes_vote(2));
     votes.insert(vec![3], no_vote(3));
-    assert_eq!(
-        calculate_consensus_result(&votes, 5, 0.5, true),
-        Some(true)
-    );
+    assert_eq!(calculate_consensus_result(&votes, 5, 0.5, true), Some(true));
 }

@@ -119,9 +119,7 @@ where
         let proposal_id = proposal.proposal_id;
 
         // Resolve config: override > scope config > global default, aligning timeout with proposal
-        let config = self
-            .resolve_config(scope, config, Some(&proposal))
-            .await?;
+        let config = self.resolve_config(scope, config, Some(&proposal)).await?;
 
         let (session, _) = ConsensusSession::from_proposal(proposal.clone(), config.clone())?;
         self.save_session(scope, session).await?;

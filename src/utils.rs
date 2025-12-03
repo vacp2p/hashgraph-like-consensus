@@ -262,9 +262,20 @@ pub fn calculate_consensus_result(
         return None;
     }
 
-    let required_choice_votes = calculate_threshold_based_value(expected_voters, consensus_threshold);
-    let yes_weight = yes_votes + if liveness_criteria_yes { silent_votes } else { 0 };
-    let no_weight = no_votes + if liveness_criteria_yes { 0 } else { silent_votes };
+    let required_choice_votes =
+        calculate_threshold_based_value(expected_voters, consensus_threshold);
+    let yes_weight = yes_votes
+        + if liveness_criteria_yes {
+            silent_votes
+        } else {
+            0
+        };
+    let no_weight = no_votes
+        + if liveness_criteria_yes {
+            0
+        } else {
+            silent_votes
+        };
 
     if yes_weight >= required_choice_votes && yes_weight > no_weight {
         return Some(true);

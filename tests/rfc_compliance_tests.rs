@@ -4,12 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
 use hashgraph_like_consensus::{
-    error::ConsensusError,
-    scope::ScopeID,
-    service::DefaultConsensusService,
-    session::ConsensusConfig,
-    types::CreateProposalRequest,
-    utils::build_vote,
+    error::ConsensusError, scope::ScopeID, service::DefaultConsensusService,
+    session::ConsensusConfig, types::CreateProposalRequest, utils::build_vote,
 };
 
 const SCOPE: &str = "rfc_compliance_scope";
