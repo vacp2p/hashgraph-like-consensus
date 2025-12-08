@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-A lightweight Rust library for making binary decisions in peer-to-peer networks.
+A lightweight Rust library for making binary decisions in peer-to-peer or gossipsub networks.
 Perfect for group governance, voting systems, or any scenario where you need distributed agreement.
 
 ## What is this?
