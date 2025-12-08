@@ -2,10 +2,10 @@
 name = "hashgraph-like-consensus"
 version = "0.1.0"
 edition = "2024"
-description = "A lightweight Rust library for making binary decisions in peer-to-peer networks using hashgraph-style consensus"
+description = "A lightweight Rust library for making binary decisions in networks using hashgraph-style consensus"
 license = "MIT"
 repository = "https://github.com/vacp2p/hashgraph-like-consensus"
-keywords = ["consensus", "hashgraph", "voting", "p2p"]
+keywords = ["consensus", "hashgraph", "voting", "p2p", "gossipsub"]
 readme = "README.md"
 
 [dependencies]
