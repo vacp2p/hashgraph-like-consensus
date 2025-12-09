@@ -168,7 +168,11 @@ impl ConsensusSession {
         clean_proposal.round = 1;
 
         let mut session = Self::new(clean_proposal, config);
-        let transition = session.initialize_with_votes(existing_votes, proposal.expiration_time)?;
+        let transition = session.initialize_with_votes(
+            existing_votes,
+            proposal.expiration_time,
+            proposal.timestamp,
+        )?;
 
         Ok((session, transition))
     }
@@ -208,6 +212,7 @@ impl ConsensusSession {
         &mut self,
         votes: Vec<Vote>,
         expiration_time: u64,
+        creation_time: u64,
     ) -> Result<SessionTransition, ConsensusError> {
         if !matches!(self.state, ConsensusState::Active) {
             return Err(ConsensusError::SessionNotActive);
@@ -233,7 +238,7 @@ impl ConsensusSession {
 
         validate_vote_chain(&votes)?;
         for vote in &votes {
-            validate_vote(vote, expiration_time)?;
+            validate_vote(vote, expiration_time, creation_time)?;
         }
 
         self.check_round_limit(votes.len())?;

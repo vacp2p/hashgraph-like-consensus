@@ -4,8 +4,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
 use hashgraph_like_consensus::{
-    error::ConsensusError, scope::ScopeID, service::DefaultConsensusService,
-    session::ConsensusConfig, types::CreateProposalRequest, utils::build_vote,
+    error::ConsensusError,
+    scope::ScopeID,
+    service::DefaultConsensusService,
+    session::ConsensusConfig,
+    types::CreateProposalRequest,
+    utils::{build_vote, compute_vote_hash},
 };
 
 const SCOPE: &str = "rfc_compliance_scope";
@@ -858,7 +862,7 @@ async fn test_timestamp_replay_attack_protection() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
-        .saturating_sub(4000); // More than 1 hour
+        .saturating_sub(EXPIRATION * 2); // More than expiration time
 
     let voter = PrivateKeySigner::random();
     let mut vote = build_vote(&proposal, VOTE_YES, voter.clone())
@@ -867,7 +871,7 @@ async fn test_timestamp_replay_attack_protection() {
 
     // Manually set old timestamp
     vote.timestamp = old_timestamp;
-    vote.vote_hash = hashgraph_like_consensus::utils::compute_vote_hash(&vote);
+    vote.vote_hash = compute_vote_hash(&vote);
     vote.signature.clear();
     let vote_bytes = vote.encode_to_vec();
     vote.signature = voter
@@ -883,7 +887,7 @@ async fn test_timestamp_replay_attack_protection() {
         .expect_err("Should reject vote with old timestamp");
 
     assert!(
-        matches!(err, ConsensusError::InvalidVoteTimestamp),
+        matches!(err, ConsensusError::TimestampOlderThanCreationTime),
         "RFC Section 3.4: Should reject votes with timestamps that are too old (replay attack)"
     );
 }

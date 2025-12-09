@@ -220,7 +220,11 @@ where
         vote: Vote,
     ) -> Result<(), ConsensusError> {
         let session = self.get_session(scope, vote.proposal_id).await?;
-        validate_vote(&vote, session.proposal.expiration_time)?;
+        validate_vote(
+            &vote,
+            session.proposal.expiration_time,
+            session.proposal.timestamp,
+        )?;
         let proposal_id = vote.proposal_id;
         let transition = self
             .update_session(scope, proposal_id, move |session| session.add_vote(vote))

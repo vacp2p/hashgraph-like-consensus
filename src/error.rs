@@ -37,6 +37,8 @@ pub enum ConsensusError {
     ParentHashMismatch,
     #[error("Invalid vote timestamp")]
     InvalidVoteTimestamp,
+    #[error("Vote timestamp is older than creation time")]
+    TimestampOlderThanCreationTime,
     #[error("Mismatched length: expected {expect}, actual {actual}")]
     MismatchedLength { expect: usize, actual: usize },
 

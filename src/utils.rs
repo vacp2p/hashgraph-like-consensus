@@ -126,7 +126,7 @@ pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
         if vote.proposal_id != proposal.proposal_id {
             return Err(ConsensusError::VoteProposalIdMismatch);
         }
-        validate_vote(vote, proposal.expiration_time)?;
+        validate_vote(vote, proposal.expiration_time, proposal.timestamp)?;
     }
     validate_vote_chain(&proposal.votes)?;
     Ok(())
@@ -137,7 +137,11 @@ pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
 /// RFC Section 3.4: Validates timestamps (reject future timestamps and votes older than 1 hour).
 /// Also checks that the vote hash is correct, the signature is valid, and the vote hasn't expired.
 /// This prevents replay attacks and ensures vote integrity.
-pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusError> {
+pub fn validate_vote(
+    vote: &Vote,
+    expiration_time: u64,
+    creation_time: u64,
+) -> Result<(), ConsensusError> {
     if vote.vote_owner.is_empty() {
         return Err(ConsensusError::EmptyVoteOwner);
     }
@@ -177,6 +181,10 @@ pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusE
     // RFC Section 3.4: timestamp validation for replay attack protection
     if vote.timestamp > now {
         return Err(ConsensusError::InvalidVoteTimestamp);
+    }
+
+    if vote.timestamp < creation_time {
+        return Err(ConsensusError::TimestampOlderThanCreationTime);
     }
 
     if vote.timestamp > expiration_time || now > expiration_time {
