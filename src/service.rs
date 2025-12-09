@@ -254,7 +254,7 @@ where
         let base_config = if let Some(override_config) = proposal_override {
             override_config
         } else if let Some(scope_config) = self.storage.get_scope_config(scope).await? {
-            scope_config.into_consensus_config()
+            ConsensusConfig::from(scope_config)
         } else {
             ConsensusConfig::gossipsub()
         };

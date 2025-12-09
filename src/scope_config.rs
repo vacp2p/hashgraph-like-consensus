@@ -42,27 +42,6 @@ impl Default for ScopeConfig {
 }
 
 impl ScopeConfig {
-    /// Create a new scope config with all defaults (Gossipsub)
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Convert scope config to ConsensusConfig for a specific proposal
-    pub fn into_consensus_config(self) -> ConsensusConfig {
-        let (max_rounds, use_gossipsub_rounds) = match self.network_type {
-            NetworkType::Gossipsub => (self.max_rounds_override.unwrap_or(2), true),
-            NetworkType::P2P => (self.max_rounds_override.unwrap_or(0), false), // 0 triggers dynamic calculation
-        };
-
-        ConsensusConfig::new(
-            self.default_consensus_threshold,
-            self.default_timeout,
-            max_rounds,
-            use_gossipsub_rounds,
-            self.default_liveness_criteria_yes,
-        )
-    }
-
     /// Validate the configuration
     pub fn validate(&self) -> Result<(), ConsensusError> {
         crate::utils::validate_threshold(self.default_consensus_threshold)?;
@@ -102,12 +81,29 @@ impl From<NetworkType> for ScopeConfig {
     }
 }
 
+impl From<ScopeConfig> for ConsensusConfig {
+    fn from(config: ScopeConfig) -> Self {
+        let (max_rounds, use_gossipsub_rounds) = match config.network_type {
+            NetworkType::Gossipsub => (config.max_rounds_override.unwrap_or(2), true),
+            // 0 triggers dynamic calculation for P2P networks
+            NetworkType::P2P => (config.max_rounds_override.unwrap_or(0), false),
+        };
+
+        ConsensusConfig::new(
+            config.default_consensus_threshold,
+            config.default_timeout,
+            max_rounds,
+            use_gossipsub_rounds,
+            config.default_liveness_criteria_yes,
+        )
+    }
+}
+
 pub struct ScopeConfigBuilder {
     config: ScopeConfig,
 }
 
 impl ScopeConfigBuilder {
-    /// Create a new builder starting with defaults
     pub(crate) fn new() -> Self {
         Self {
             config: ScopeConfig::default(),
