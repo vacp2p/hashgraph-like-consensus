@@ -37,12 +37,12 @@ impl<Scope> BroadcastEventBus<Scope>
 where
     Scope: ConsensusScope,
 {
-    /// Create a new broadcast event bus with a custom buffer size.
+    /// Create a new broadcast event bus with a custom max_queued_events size.
     ///
-    /// The buffer size determines how many events can be queued before subscribers
+    /// The max_queued_events size determines how many events can be queued before subscribers
     /// start missing events. Default is 1000.
-    pub fn new(buffer: usize) -> Self {
-        let (sender, _) = broadcast::channel(buffer);
+    pub fn new(max_queued_events: usize) -> Self {
+        let (sender, _) = broadcast::channel(max_queued_events);
         Self { sender }
     }
 }
