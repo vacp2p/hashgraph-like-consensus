@@ -389,7 +389,10 @@ async fn test_handle_consensus_timeout_insufficient_votes() {
     let consensus_result = service
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
-    assert_eq!(consensus_result, None, "should have no consensus result");
+    assert!(matches!(
+        consensus_result,
+        Err(ConsensusError::ConsensusFailed)
+    ));
 
     let active_proposals = service.get_active_proposals(&scope).await;
     assert!(
@@ -459,7 +462,10 @@ async fn test_handle_consensus_timeout_no_votes() {
     let consensus_result = service
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
-    assert_eq!(consensus_result, None, "should have no consensus result");
+    assert!(matches!(
+        consensus_result,
+        Err(ConsensusError::ConsensusFailed)
+    ));
 
     let active_proposals = service.get_active_proposals(&scope).await;
     assert!(

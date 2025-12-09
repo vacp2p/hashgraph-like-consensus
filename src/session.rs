@@ -339,12 +339,13 @@ impl ConsensusSession {
 
     /// Get the consensus result if one has been reached.
     ///
-    /// Returns `Some(true)` for YES, `Some(false)` for NO, or `None` if consensus
+    /// Returns `Ok(true)` for YES, `Ok(false)` for NO, or `Err(ConsensusError::ConsensusNotReached)` if consensus
     /// hasn't been reached yet.
-    pub fn is_reached(&self) -> Option<bool> {
-        match self.state {
-            ConsensusState::ConsensusReached(result) => Some(result),
-            _ => None,
+    pub fn get_consensus_result(&self) -> Result<bool, ConsensusError> {
+        if let ConsensusState::ConsensusReached(result) = self.state {
+            Ok(result)
+        } else {
+            Err(ConsensusError::ConsensusNotReached)
         }
     }
 }

@@ -76,7 +76,7 @@ async fn test_concurrent_vote_casting() {
     sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
     let result = service.get_consensus_result(&scope, proposal_id).await;
     assert!(
-        result.is_some(),
+        result.is_ok(),
         "Consensus should be reached with concurrent votes"
     );
 }

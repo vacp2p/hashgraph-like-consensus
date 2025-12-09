@@ -57,6 +57,10 @@ pub enum ConsensusError {
     InsufficientVotesAtTimeout,
     #[error("Consensus exceeded configured max rounds")]
     MaxRoundsExceeded,
+    #[error("Consensus not reached")]
+    ConsensusNotReached,
+    #[error("Consensus failed")]
+    ConsensusFailed,
 
     #[error("Invalid signature: {0}")]
     InvalidSignature(#[from] SignatureError),

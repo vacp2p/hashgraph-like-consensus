@@ -306,9 +306,12 @@ async fn test_p2p_dynamic_max_rounds() {
     let result = service
         .get_consensus_result(&scope, last_proposal.proposal_id)
         .await;
-    assert_eq!(
-        result,
-        Some(true),
+    assert!(
+        result.is_ok(),
+        "Consensus should be reached with 6 YES votes"
+    );
+    assert!(
+        result.unwrap(),
         "Consensus should be reached with 6 YES votes"
     );
 
@@ -499,9 +502,12 @@ async fn test_p2p_batch_vote_processing() {
     let consensus_result = service
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
-    assert_eq!(
-        consensus_result,
-        Some(true),
+    assert!(
+        consensus_result.is_ok(),
+        "P2P: Consensus should be reached with 6 YES votes"
+    );
+    assert!(
+        consensus_result.unwrap(),
         "P2P: Consensus should be reached with 6 YES votes"
     );
 
@@ -518,9 +524,12 @@ async fn test_p2p_batch_vote_processing() {
     let final_consensus = service
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
-    assert_eq!(
-        final_consensus,
-        Some(true),
+    assert!(
+        final_consensus.is_ok(),
+        "P2P: Consensus result should remain YES"
+    );
+    assert!(
+        final_consensus.unwrap(),
         "P2P: Consensus result should remain YES"
     );
 
@@ -569,11 +578,8 @@ async fn test_consensus_reachable_in_both_modes() {
     let result1 = service
         .get_consensus_result(&scope1, proposal1.proposal_id)
         .await;
-    assert_eq!(
-        result1,
-        Some(true),
-        "Gossipsub: Consensus should be reached"
-    );
+    assert!(result1.is_ok(), "Gossipsub: Consensus should be reached");
+    assert!(result1.unwrap(), "Gossipsub: Consensus should be reached");
 
     // Test P2P mode
     let scope2 = ScopeID::from("p2p_consensus");
@@ -611,7 +617,8 @@ async fn test_consensus_reachable_in_both_modes() {
     let result2 = service
         .get_consensus_result(&scope2, proposal2.proposal_id)
         .await;
-    assert_eq!(result2, Some(true), "P2P: Consensus should be reached");
+    assert!(result2.is_ok(), "P2P: Consensus should be reached");
+    assert!(result2.unwrap(), "P2P: Consensus should be reached");
 }
 
 /// RFC Section 4: Test that n ≤ 2 requires unanimous YES votes
@@ -647,11 +654,8 @@ async fn test_n_le_2_requires_unanimous_yes() {
     let result = service
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
-    assert_eq!(
-        result,
-        Some(true),
-        "RFC Section 4: n=1 requires unanimous YES"
-    );
+    assert!(result.is_ok(), "RFC Section 4: n=1 requires unanimous YES");
+    assert!(result.unwrap(), "RFC Section 4: n=1 requires unanimous YES");
 
     // Test with n = 2, both YES
     let scope2 = ScopeID::from("scope2");
@@ -688,11 +692,8 @@ async fn test_n_le_2_requires_unanimous_yes() {
     let result = service
         .get_consensus_result(&scope2, proposal2.proposal_id)
         .await;
-    assert_eq!(
-        result,
-        Some(true),
-        "RFC Section 4: n=2 requires unanimous YES"
-    );
+    assert!(result.is_ok(), "RFC Section 4: n=2 requires unanimous YES");
+    assert!(result.unwrap(), "RFC Section 4: n=2 requires unanimous YES");
 
     // Test with n = 2, one YES one NO (should fail)
     let scope3 = ScopeID::from("scope3");
@@ -729,9 +730,12 @@ async fn test_n_le_2_requires_unanimous_yes() {
     let result = service
         .get_consensus_result(&scope3, proposal3.proposal_id)
         .await;
-    assert_eq!(
-        result,
-        Some(false),
+    assert!(
+        result.is_ok(),
+        "RFC Section 4: n=2 with non-unanimous should be NO"
+    );
+    assert!(
+        !result.unwrap(),
         "RFC Section 4: n=2 with non-unanimous should be NO"
     );
 }
@@ -769,7 +773,14 @@ async fn test_n_gt_2_consensus_requirements() {
     let result = service
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
-    assert_eq!(result, None, "Should not reach consensus with only 1 vote");
+    assert!(
+        result.is_err(),
+        "Should not reach consensus with only 1 vote"
+    );
+    assert!(
+        matches!(result, Err(ConsensusError::ConsensusNotReached)),
+        "Should not reach consensus with only 1 vote"
+    );
 
     let voter2 = PrivateKeySigner::random();
     service
@@ -781,9 +792,12 @@ async fn test_n_gt_2_consensus_requirements() {
     let result = service
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
-    assert_eq!(
-        result,
-        Some(true),
+    assert!(
+        result.is_ok(),
+        "RFC Section 4: Should reach YES consensus with 2 YES votes out of 3"
+    );
+    assert!(
+        result.unwrap(),
         "RFC Section 4: Should reach YES consensus with 2 YES votes out of 3"
     );
 }
@@ -945,9 +959,12 @@ async fn test_equality_of_votes_handling() {
     let result = service
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
-    assert_eq!(
-        result,
-        Some(true),
+    assert!(
+        result.is_ok(),
+        "RFC Section 4: Equality with liveness_criteria_yes=true should be YES"
+    );
+    assert!(
+        result.unwrap(),
         "RFC Section 4: Equality with liveness_criteria_yes=true should be YES"
     );
 
@@ -1000,9 +1017,12 @@ async fn test_equality_of_votes_handling() {
     let result = service
         .get_consensus_result(&scope2, proposal2.proposal_id)
         .await;
-    assert_eq!(
-        result,
-        Some(false),
+    assert!(
+        result.is_ok(),
+        "RFC Section 4: Equality with liveness_criteria_yes=false should be NO"
+    );
+    assert!(
+        !result.unwrap(),
         "RFC Section 4: Equality with liveness_criteria_yes=false should be NO"
     );
 }

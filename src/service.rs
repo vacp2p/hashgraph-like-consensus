@@ -108,18 +108,24 @@ where
 
     /// Get the final consensus result for a proposal, if it's been reached.
     ///
-    /// Returns `Some(true)` if consensus was YES, `Some(false)` if NO, or `None` if
-    /// consensus hasn't been reached yet (or the proposal doesn't exist).
-    pub async fn get_consensus_result(&self, scope: &Scope, proposal_id: u32) -> Option<bool> {
-        self.storage
+    /// Returns `Ok(true)` if consensus was YES, `Ok(false)` if NO, or `Err` if
+    /// consensus hasn't been reached yet (or the proposal doesn't exist or is still active).
+    pub async fn get_consensus_result(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> Result<bool, ConsensusError> {
+        let session = self
+            .storage
             .get_session(scope, proposal_id)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|session| match session.state {
-                ConsensusState::ConsensusReached(result) => Some(result),
-                _ => None,
-            })
+            .await?
+            .ok_or(ConsensusError::SessionNotFound)?;
+
+        match session.state {
+            ConsensusState::ConsensusReached(result) => Ok(result),
+            ConsensusState::Failed => Err(ConsensusError::ConsensusFailed),
+            ConsensusState::Active => Err(ConsensusError::ConsensusNotReached),
+        }
     }
 
     /// Get all proposals that are still accepting votes.
@@ -130,8 +136,7 @@ where
             .map(|sessions| {
                 sessions
                     .into_iter()
-                    .filter(|session| session.is_active())
-                    .map(|session| session.proposal)
+                    .filter_map(|session| session.is_active().then_some(session.proposal))
                     .collect()
             })
             .unwrap_or_default()
@@ -141,15 +146,19 @@ where
     ///
     /// Returns a map from proposal ID to result (`Some(true)` for YES, `Some(false)` for NO).
     /// Only includes proposals that have finalized - active proposals are not included.
-    pub async fn get_reached_proposals(&self, scope: &Scope) -> HashMap<u32, Option<bool>> {
+    pub async fn get_reached_proposals(&self, scope: &Scope) -> HashMap<u32, bool> {
         self.storage
             .list_scope_sessions(scope)
             .await
             .map(|sessions| {
                 sessions
                     .into_iter()
-                    .filter(|session| matches!(session.state, ConsensusState::ConsensusReached(_)))
-                    .map(|session| (session.proposal.proposal_id, session.is_reached()))
+                    .filter_map(|session| {
+                        session
+                            .get_consensus_result()
+                            .ok()
+                            .map(|result| (session.proposal.proposal_id, result))
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -425,7 +434,7 @@ where
             if service
                 .get_consensus_result(&scope, proposal_id)
                 .await
-                .is_some()
+                .is_ok()
             {
                 return;
             }
