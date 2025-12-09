@@ -129,39 +129,53 @@ where
     }
 
     /// Get all proposals that are still accepting votes.
-    pub async fn get_active_proposals(&self, scope: &Scope) -> Vec<Proposal> {
-        self.storage
+    pub async fn get_active_proposals(
+        &self,
+        scope: &Scope,
+    ) -> Result<Option<Vec<Proposal>>, ConsensusError> {
+        let sessions = self
+            .storage
             .list_scope_sessions(scope)
-            .await
-            .map(|sessions| {
-                sessions
-                    .into_iter()
-                    .filter_map(|session| session.is_active().then_some(session.proposal))
-                    .collect()
-            })
-            .unwrap_or_default()
+            .await?
+            .ok_or(ConsensusError::ScopeNotFound)?;
+        let result = sessions
+            .into_iter()
+            .filter_map(|session| session.is_active().then_some(session.proposal))
+            .collect::<Vec<Proposal>>();
+        if result.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(result))
     }
 
     /// Get all proposals that have reached consensus, along with their results.
     ///
-    /// Returns a map from proposal ID to result (`Some(true)` for YES, `Some(false)` for NO).
+    /// Returns a map from proposal ID to result (`true` for YES, `false` for NO).
     /// Only includes proposals that have finalized - active proposals are not included.
-    pub async fn get_reached_proposals(&self, scope: &Scope) -> HashMap<u32, bool> {
-        self.storage
+    /// Returns `None` if no proposals have reached consensus.
+    pub async fn get_reached_proposals(
+        &self,
+        scope: &Scope,
+    ) -> Result<Option<HashMap<u32, bool>>, ConsensusError> {
+        let sessions = self
+            .storage
             .list_scope_sessions(scope)
-            .await
-            .map(|sessions| {
-                sessions
-                    .into_iter()
-                    .filter_map(|session| {
-                        session
-                            .get_consensus_result()
-                            .ok()
-                            .map(|result| (session.proposal.proposal_id, result))
-                    })
-                    .collect()
+            .await?
+            .ok_or(ConsensusError::ScopeNotFound)?;
+
+        let result = sessions
+            .into_iter()
+            .filter_map(|session| {
+                session
+                    .get_consensus_result()
+                    .ok()
+                    .map(|result| (session.proposal.proposal_id, result))
             })
-            .unwrap_or_default()
+            .collect::<HashMap<u32, bool>>();
+        if result.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(result))
     }
 
     /// Check if a proposal has collected enough votes to reach consensus.
@@ -392,7 +406,10 @@ where
         &self,
         scope: &Scope,
     ) -> Result<Vec<ConsensusSession>, ConsensusError> {
-        self.storage.list_scope_sessions(scope).await
+        self.storage
+            .list_scope_sessions(scope)
+            .await?
+            .ok_or(ConsensusError::ScopeNotFound)
     }
 
     pub(crate) fn handle_transition(

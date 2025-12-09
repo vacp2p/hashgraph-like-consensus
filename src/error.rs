@@ -51,6 +51,8 @@ pub enum ConsensusError {
     SessionNotFound,
     #[error("Proposal already exist in consensus service")]
     ProposalAlreadyExist,
+    #[error("Scope not found")]
+    ScopeNotFound,
 
     // Consensus Result Errors
     #[error("Insufficient votes at timeout")]

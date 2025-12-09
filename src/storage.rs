@@ -37,7 +37,7 @@ where
     async fn list_scope_sessions(
         &self,
         scope: &Scope,
-    ) -> Result<Vec<ConsensusSession>, ConsensusError>;
+    ) -> Result<Option<Vec<ConsensusSession>>, ConsensusError>;
 
     async fn replace_scope_sessions(
         &self,
@@ -45,7 +45,7 @@ where
         sessions: Vec<ConsensusSession>,
     ) -> Result<(), ConsensusError>;
 
-    async fn list_scopes(&self) -> Result<Vec<Scope>, ConsensusError>;
+    async fn list_scopes(&self) -> Result<Option<Vec<Scope>>, ConsensusError>;
 
     async fn update_session<R, F>(
         &self,
@@ -161,12 +161,12 @@ where
     async fn list_scope_sessions(
         &self,
         scope: &Scope,
-    ) -> Result<Vec<ConsensusSession>, ConsensusError> {
+    ) -> Result<Option<Vec<ConsensusSession>>, ConsensusError> {
         let sessions = self.sessions.read().await;
-        Ok(sessions
+        let result = sessions
             .get(scope)
-            .map(|scope| scope.values().cloned().collect())
-            .unwrap_or_default())
+            .map(|scope| scope.values().cloned().collect::<Vec<ConsensusSession>>());
+        Ok(result)
     }
 
     async fn replace_scope_sessions(
@@ -183,9 +183,13 @@ where
         Ok(())
     }
 
-    async fn list_scopes(&self) -> Result<Vec<Scope>, ConsensusError> {
+    async fn list_scopes(&self) -> Result<Option<Vec<Scope>>, ConsensusError> {
         let sessions = self.sessions.read().await;
-        Ok(sessions.keys().cloned().collect())
+        let result = sessions.keys().cloned().collect::<Vec<Scope>>();
+        if result.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(result))
     }
 
     async fn update_session<R, F>(

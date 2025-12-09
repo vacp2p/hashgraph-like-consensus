@@ -55,7 +55,15 @@ async fn test_basic_consensus_flow() {
         .await
         .expect("proposal_owner vote should succeed");
 
-    assert_eq!(service.get_active_proposals(&scope).await.len(), 1);
+    assert_eq!(
+        service
+            .get_active_proposals(&scope)
+            .await
+            .unwrap()
+            .unwrap()
+            .len(),
+        1
+    );
     let stats = service.get_scope_stats(&scope).await;
     assert_eq!(stats.total_sessions, 1);
     assert!(
@@ -138,8 +146,16 @@ async fn test_multi_scope_isolation() {
         .await
         .expect("scope2 proposal_owner vote");
 
-    assert_eq!(service.get_active_proposals(&scope1).await.len(), 1);
-    assert_eq!(service.get_active_proposals(&scope2).await.len(), 0); // scope2 reached consensus
+    assert_eq!(
+        service
+            .get_active_proposals(&scope1)
+            .await
+            .unwrap()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(service.get_active_proposals(&scope2).await.unwrap(), None); // scope2 reached consensus
 
     let stats1 = service.get_scope_stats(&scope1).await;
     assert_eq!(stats1.total_sessions, 1);
@@ -394,11 +410,12 @@ async fn test_handle_consensus_timeout_insufficient_votes() {
         Err(ConsensusError::ConsensusFailed)
     ));
 
-    let active_proposals = service.get_active_proposals(&scope).await;
+    let active_proposals = service
+        .get_active_proposals(&scope)
+        .await
+        .expect("should not return error while getting active proposals");
     assert!(
-        !active_proposals
-            .iter()
-            .any(|p| p.proposal_id == proposal.proposal_id),
+        active_proposals.is_none(),
         "proposal should not be in active proposals"
     );
 }
@@ -467,11 +484,233 @@ async fn test_handle_consensus_timeout_no_votes() {
         Err(ConsensusError::ConsensusFailed)
     ));
 
-    let active_proposals = service.get_active_proposals(&scope).await;
+    let active_proposals = service
+        .get_active_proposals(&scope)
+        .await
+        .expect("should not return error while getting active proposals");
     assert!(
-        !active_proposals
-            .iter()
-            .any(|p| p.proposal_id == proposal.proposal_id),
+        active_proposals.is_none(),
         "proposal should not be in active proposals"
+    );
+}
+
+#[tokio::test]
+async fn test_get_reached_proposals_with_consensus() {
+    let service = DefaultConsensusService::default();
+    let scope = ScopeID::from(SCOPE1_NAME);
+    let proposal_owner = PrivateKeySigner::random();
+
+    // Create a proposal that will reach consensus
+    let proposal = service
+        .create_proposal_with_config(
+            &scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD.to_string(),
+                proposal_owner_from_signer(&proposal_owner),
+                EXPECTED_VOTERS_COUNT_1,
+                PROPOSAL_EXPIRATION_TIME,
+                true,
+            )
+            .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
+        )
+        .await
+        .expect("proposal should be created");
+
+    // Cast vote to reach consensus
+    service
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .await
+        .expect("vote should succeed");
+
+    // Get reached proposals
+    let reached = service
+        .get_reached_proposals(&scope)
+        .await
+        .expect("should not return error");
+
+    assert!(reached.is_some(), "should have reached proposals");
+    let reached_map = reached.unwrap();
+    assert_eq!(
+        reached_map.len(),
+        1,
+        "should have exactly one reached proposal"
+    );
+    assert!(
+        reached_map.contains_key(&proposal.proposal_id),
+        "should contain the proposal"
+    );
+    assert_eq!(
+        reached_map.get(&proposal.proposal_id),
+        Some(&true),
+        "proposal should have YES consensus result"
+    );
+}
+
+#[tokio::test]
+async fn test_get_reached_proposals_no_consensus() {
+    let service = DefaultConsensusService::default();
+    let scope = ScopeID::from(SCOPE1_NAME);
+    let proposal_owner = PrivateKeySigner::random();
+
+    // Create a proposal that won't reach consensus
+    let _proposal = service
+        .create_proposal_with_config(
+            &scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD.to_string(),
+                proposal_owner_from_signer(&proposal_owner),
+                EXPECTED_VOTERS_COUNT_3,
+                PROPOSAL_EXPIRATION_TIME,
+                true,
+            )
+            .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
+        )
+        .await
+        .expect("proposal should be created");
+
+    // Don't cast enough votes - proposal remains active
+
+    // Get reached proposals
+    let reached = service
+        .get_reached_proposals(&scope)
+        .await
+        .expect("should not return error");
+
+    assert!(
+        reached.is_none(),
+        "should return None when no proposals have reached consensus"
+    );
+}
+
+#[tokio::test]
+async fn test_get_reached_proposals_mixed_states() {
+    let service = DefaultConsensusService::default();
+    let scope = ScopeID::from(SCOPE1_NAME);
+    let proposal_owner1 = PrivateKeySigner::random();
+    let proposal_owner2 = PrivateKeySigner::random();
+    let proposal_owner3 = PrivateKeySigner::random();
+
+    // Create proposal 1 that reaches consensus (YES)
+    let proposal1 = service
+        .create_proposal_with_config(
+            &scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD.to_string(),
+                proposal_owner_from_signer(&proposal_owner1),
+                EXPECTED_VOTERS_COUNT_1,
+                PROPOSAL_EXPIRATION_TIME,
+                true,
+            )
+            .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
+        )
+        .await
+        .expect("proposal should be created");
+
+    service
+        .cast_vote(&scope, proposal1.proposal_id, true, proposal_owner1)
+        .await
+        .expect("vote should succeed");
+
+    // Create proposal 2 that reaches consensus (NO)
+    let proposal2 = service
+        .create_proposal_with_config(
+            &scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD.to_string(),
+                proposal_owner_from_signer(&proposal_owner2),
+                EXPECTED_VOTERS_COUNT_1,
+                PROPOSAL_EXPIRATION_TIME,
+                true,
+            )
+            .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
+        )
+        .await
+        .expect("proposal should be created");
+
+    service
+        .cast_vote(&scope, proposal2.proposal_id, false, proposal_owner2)
+        .await
+        .expect("vote should succeed");
+
+    // Create proposal 3 that remains active (doesn't reach consensus)
+    let proposal3 = service
+        .create_proposal_with_config(
+            &scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD.to_string(),
+                proposal_owner_from_signer(&proposal_owner3),
+                EXPECTED_VOTERS_COUNT_3,
+                PROPOSAL_EXPIRATION_TIME,
+                true,
+            )
+            .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
+        )
+        .await
+        .expect("proposal should be created");
+
+    // Don't cast enough votes for proposal3
+
+    // Get reached proposals
+    let reached = service
+        .get_reached_proposals(&scope)
+        .await
+        .expect("should not return error");
+
+    assert!(reached.is_some(), "should have reached proposals");
+    let reached_map = reached.unwrap();
+    assert_eq!(
+        reached_map.len(),
+        2,
+        "should have exactly two reached proposals"
+    );
+    assert!(
+        reached_map.contains_key(&proposal1.proposal_id),
+        "should contain proposal1"
+    );
+    assert!(
+        reached_map.contains_key(&proposal2.proposal_id),
+        "should contain proposal2"
+    );
+    assert!(
+        !reached_map.contains_key(&proposal3.proposal_id),
+        "should not contain active proposal3"
+    );
+    assert_eq!(
+        reached_map.get(&proposal1.proposal_id),
+        Some(&true),
+        "proposal1 should have YES consensus"
+    );
+    assert_eq!(
+        reached_map.get(&proposal2.proposal_id),
+        Some(&false),
+        "proposal2 should have NO consensus"
+    );
+}
+
+#[tokio::test]
+async fn test_get_reached_proposals_nonexistent_scope() {
+    let service = DefaultConsensusService::default();
+    let nonexistent_scope = ScopeID::from("nonexistent");
+
+    // Get reached proposals for non-existent scope
+    let result = service.get_reached_proposals(&nonexistent_scope).await;
+
+    assert!(
+        result.is_err(),
+        "should return error for non-existent scope"
+    );
+    assert!(
+        matches!(result.unwrap_err(), ConsensusError::ScopeNotFound),
+        "should return ScopeNotFound error"
     );
 }
