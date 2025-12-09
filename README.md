@@ -83,7 +83,7 @@ use hashgraph_like_consensus::{
     service::DefaultConsensusService,
 };
 
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let service = DefaultConsensusService::default();
 let scope = ScopeID::from("team_votes");
 
@@ -96,8 +96,8 @@ service
     .with_liveness_criteria(false)
     .initialize()
     .await?;
-# Ok(())
-# }
+Ok(())
+}
 ```
 
 ### Creating a Service
