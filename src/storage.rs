@@ -1,5 +1,5 @@
+use parking_lot::RwLock;
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::RwLock;
 
 use crate::{
     error::ConsensusError, scope::ConsensusScope, scope_config::ScopeConfig,
@@ -129,8 +129,8 @@ where
         scope: &Scope,
         session: ConsensusSession,
     ) -> Result<(), ConsensusError> {
-        let mut sessions = self.sessions.write().await;
-        let entry = sessions.entry(scope.clone()).or_insert_with(HashMap::new);
+        let mut sessions = self.sessions.write();
+        let entry = sessions.entry(scope.clone()).or_default();
         entry.insert(session.proposal.proposal_id, session);
         Ok(())
     }
@@ -140,7 +140,7 @@ where
         scope: &Scope,
         proposal_id: u32,
     ) -> Result<Option<ConsensusSession>, ConsensusError> {
-        let sessions = self.sessions.read().await;
+        let sessions = self.sessions.read();
         Ok(sessions
             .get(scope)
             .and_then(|scope| scope.get(&proposal_id))
@@ -152,7 +152,7 @@ where
         scope: &Scope,
         proposal_id: u32,
     ) -> Result<Option<ConsensusSession>, ConsensusError> {
-        let mut sessions = self.sessions.write().await;
+        let mut sessions = self.sessions.write();
         Ok(sessions
             .get_mut(scope)
             .and_then(|scope| scope.remove(&proposal_id)))
@@ -162,7 +162,7 @@ where
         &self,
         scope: &Scope,
     ) -> Result<Option<Vec<ConsensusSession>>, ConsensusError> {
-        let sessions = self.sessions.read().await;
+        let sessions = self.sessions.read();
         let result = sessions
             .get(scope)
             .map(|scope| scope.values().cloned().collect::<Vec<ConsensusSession>>());
@@ -174,7 +174,7 @@ where
         scope: &Scope,
         sessions_list: Vec<ConsensusSession>,
     ) -> Result<(), ConsensusError> {
-        let mut sessions = self.sessions.write().await;
+        let mut sessions = self.sessions.write();
         let new_map = sessions_list
             .into_iter()
             .map(|session| (session.proposal.proposal_id, session))
@@ -184,7 +184,7 @@ where
     }
 
     async fn list_scopes(&self) -> Result<Option<Vec<Scope>>, ConsensusError> {
-        let sessions = self.sessions.read().await;
+        let sessions = self.sessions.read();
         let result = sessions.keys().cloned().collect::<Vec<Scope>>();
         if result.is_empty() {
             return Ok(None);
@@ -202,7 +202,7 @@ where
         R: Send,
         F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError> + Send,
     {
-        let mut sessions = self.sessions.write().await;
+        let mut sessions = self.sessions.write();
         let session = sessions
             .get_mut(scope)
             .and_then(|scope_sessions| scope_sessions.get_mut(&proposal_id))
@@ -220,8 +220,8 @@ where
     where
         F: FnOnce(&mut Vec<ConsensusSession>) -> Result<(), ConsensusError> + Send,
     {
-        let mut sessions = self.sessions.write().await;
-        let scope_sessions = sessions.entry(scope.clone()).or_insert_with(HashMap::new);
+        let mut sessions = self.sessions.write();
+        let scope_sessions = sessions.entry(scope.clone()).or_default();
 
         let mut sessions_vec: Vec<ConsensusSession> = scope_sessions.values().cloned().collect();
         mutator(&mut sessions_vec)?;
@@ -241,7 +241,7 @@ where
     }
 
     async fn get_scope_config(&self, scope: &Scope) -> Result<Option<ScopeConfig>, ConsensusError> {
-        let configs = self.scope_configs.read().await;
+        let configs = self.scope_configs.read();
         Ok(configs.get(scope).cloned())
     }
 
@@ -251,7 +251,7 @@ where
         config: ScopeConfig,
     ) -> Result<(), ConsensusError> {
         config.validate()?;
-        let mut configs = self.scope_configs.write().await;
+        let mut configs = self.scope_configs.write();
         configs.insert(scope.clone(), config);
         Ok(())
     }
@@ -260,10 +260,8 @@ where
     where
         F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError> + Send,
     {
-        let mut configs = self.scope_configs.write().await;
-        let config = configs
-            .entry(scope.clone())
-            .or_insert_with(ScopeConfig::default);
+        let mut configs = self.scope_configs.write();
+        let config = configs.entry(scope.clone()).or_default();
         updater(config)?;
         config.validate()?;
         Ok(())
