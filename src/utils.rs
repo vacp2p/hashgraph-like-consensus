@@ -178,11 +178,8 @@ pub fn validate_vote(
 
     let now = current_timestamp()?;
 
-    // RFC Section 3.4: timestamp validation for replay attack protection
-    if vote.timestamp > now {
-        return Err(ConsensusError::InvalidVoteTimestamp);
-    }
-
+    // RFC Section 3.4:  Check the `timestamp` against the replay attack.
+    // In particular, the `timestamp` cannot be the old in the determined threshold.
     if vote.timestamp < creation_time {
         return Err(ConsensusError::TimestampOlderThanCreationTime);
     }
