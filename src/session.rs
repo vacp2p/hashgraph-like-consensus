@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use crate::{
     error::ConsensusError,
     protos::consensus::v1::{Proposal, Vote},
+    scope_config::{NetworkType, ScopeConfig},
     types::SessionTransition,
     utils::{
         calculate_consensus_result, calculate_max_rounds, current_timestamp, validate_proposal,
@@ -14,8 +15,8 @@ use crate::{
 pub struct ConsensusConfig {
     /// What fraction of expected voters must vote before consensus can be reached (default: 2/3).
     consensus_threshold: f64,
-    /// How long to wait (in seconds) before timing out if consensus isn't reached.
-    consensus_timeout: u64,
+    /// How long to wait before timing out if consensus isn't reached.
+    consensus_timeout: Duration,
     /// Maximum number of voting rounds (vote increments) before giving up.
     ///
     /// Creation starts at round 1, so this caps the number of votes that can be processed.
@@ -30,28 +31,39 @@ pub struct ConsensusConfig {
     liveness_criteria: bool,
 }
 
+impl From<NetworkType> for ConsensusConfig {
+    fn from(network_type: NetworkType) -> Self {
+        ConsensusConfig::from(ScopeConfig::from(network_type))
+    }
+}
+
+impl From<ScopeConfig> for ConsensusConfig {
+    fn from(config: ScopeConfig) -> Self {
+        let (max_rounds, use_gossipsub_rounds) = match config.network_type {
+            NetworkType::Gossipsub => (config.max_rounds_override.unwrap_or(2), true),
+            // 0 triggers dynamic calculation for P2P networks
+            NetworkType::P2P => (config.max_rounds_override.unwrap_or(0), false),
+        };
+
+        ConsensusConfig::new(
+            config.default_consensus_threshold,
+            config.default_timeout,
+            max_rounds,
+            use_gossipsub_rounds,
+            config.default_liveness_criteria_yes,
+        )
+    }
+}
+
 impl ConsensusConfig {
     /// Default configuration for P2P transport: derive round cap as ceil(2n/3).
     /// Max rounds is 0, so the round cap is calculated dynamically based on the expected voters count.
     pub fn p2p() -> Self {
-        Self {
-            consensus_threshold: 2.0 / 3.0,
-            consensus_timeout: 10,
-            max_rounds: 0,
-            use_gossipsub_rounds: false,
-            liveness_criteria: true,
-        }
+        ConsensusConfig::from(NetworkType::P2P)
     }
 
-    /// Default configuration for gossipsub: enforce two rounds.
     pub fn gossipsub() -> Self {
-        Self {
-            max_rounds: 2,
-            use_gossipsub_rounds: true,
-            consensus_threshold: 2.0 / 3.0,
-            consensus_timeout: 10,
-            liveness_criteria: true,
-        }
+        ConsensusConfig::from(NetworkType::Gossipsub)
     }
 
     pub fn set_up_rounds(&mut self, max_rounds: u32) -> Result<(), ConsensusError> {
@@ -66,7 +78,7 @@ impl ConsensusConfig {
     /// This is used internally for scope configuration conversion.
     pub(crate) fn new(
         consensus_threshold: f64,
-        consensus_timeout: u64,
+        consensus_timeout: Duration,
         max_rounds: u32,
         use_gossipsub_rounds: bool,
         liveness_criteria: bool,
@@ -90,7 +102,7 @@ impl ConsensusConfig {
         }
     }
 
-    pub fn consensus_timeout(&self) -> u64 {
+    pub fn consensus_timeout(&self) -> Duration {
         self.consensus_timeout
     }
 

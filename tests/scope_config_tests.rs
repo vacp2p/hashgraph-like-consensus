@@ -1,9 +1,14 @@
+use std::time::Duration;
+
 use hashgraph_like_consensus::{
     error::ConsensusError, scope::ScopeID, scope_config::NetworkType,
     service::DefaultConsensusService,
 };
 
 const SCOPE_NAME: &str = "test_scope";
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_DOUBLE_TIMEOUT: Duration = Duration::from_secs(120);
+const DEFAULT_SHORT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn test_scope_config_creation() {
@@ -17,7 +22,7 @@ async fn test_scope_config_creation() {
         .unwrap()
         .with_network_type(NetworkType::P2P)
         .with_threshold(0.75)
-        .with_timeout(120)
+        .with_timeout(DEFAULT_DOUBLE_TIMEOUT)
         .with_liveness_criteria(true)
         .initialize()
         .await
@@ -28,7 +33,7 @@ async fn test_scope_config_creation() {
 
     assert_eq!(config.network_type, NetworkType::P2P);
     assert_eq!(config.default_consensus_threshold, 0.75);
-    assert_eq!(config.default_timeout, 120);
+    assert_eq!(config.default_timeout, DEFAULT_DOUBLE_TIMEOUT);
     assert!(config.default_liveness_criteria_yes);
 }
 
@@ -44,7 +49,7 @@ async fn test_scope_config_update() {
         .unwrap()
         .with_network_type(NetworkType::Gossipsub)
         .with_threshold(2.0 / 3.0)
-        .with_timeout(60)
+        .with_timeout(DEFAULT_TIMEOUT)
         .initialize()
         .await
         .unwrap();
@@ -64,7 +69,7 @@ async fn test_scope_config_update() {
 
     assert_eq!(config.default_consensus_threshold, 0.8);
     assert_eq!(config.network_type, NetworkType::Gossipsub); // Should remain unchanged
-    assert_eq!(config.default_timeout, 60); // Should remain unchanged
+    assert_eq!(config.default_timeout, DEFAULT_TIMEOUT); // Should remain unchanged
 }
 
 #[tokio::test]
@@ -79,7 +84,7 @@ async fn test_scope_config_update_multiple_fields() {
         .unwrap()
         .with_network_type(NetworkType::P2P)
         .with_threshold(0.6)
-        .with_timeout(30)
+        .with_timeout(DEFAULT_SHORT_TIMEOUT)
         .initialize()
         .await
         .unwrap();
@@ -90,7 +95,7 @@ async fn test_scope_config_update_multiple_fields() {
         .await
         .unwrap()
         .with_threshold(0.9)
-        .with_timeout(180)
+        .with_timeout(DEFAULT_DOUBLE_TIMEOUT)
         .with_liveness_criteria(false)
         .update()
         .await
@@ -100,7 +105,7 @@ async fn test_scope_config_update_multiple_fields() {
     let config = service.scope(&scope).await.unwrap().get_config();
 
     assert_eq!(config.default_consensus_threshold, 0.9);
-    assert_eq!(config.default_timeout, 180);
+    assert_eq!(config.default_timeout, DEFAULT_DOUBLE_TIMEOUT);
     assert!(!config.default_liveness_criteria_yes);
     assert_eq!(config.network_type, NetworkType::P2P); // Should remain unchanged
 }
@@ -124,7 +129,7 @@ async fn test_scope_config_presets() {
 
     assert_eq!(config.network_type, NetworkType::P2P);
     assert_eq!(config.default_consensus_threshold, 2.0 / 3.0);
-    assert_eq!(config.default_timeout, 60);
+    assert_eq!(config.default_timeout, DEFAULT_TIMEOUT);
 
     // Test Gossipsub preset
     service
@@ -177,7 +182,7 @@ async fn test_scope_config_validation() {
         .scope(&scope)
         .await
         .unwrap()
-        .with_timeout(0) // Invalid: must be > 0
+        .with_timeout(Duration::from_secs(0)) // Invalid: must be > 0
         .initialize()
         .await;
 
@@ -199,7 +204,7 @@ async fn test_scope_config_new_scope_uses_defaults() {
     // Should have default values
     assert_eq!(config.network_type, NetworkType::Gossipsub);
     assert_eq!(config.default_consensus_threshold, 2.0 / 3.0);
-    assert_eq!(config.default_timeout, 60);
+    assert_eq!(config.default_timeout, DEFAULT_TIMEOUT);
     assert!(config.default_liveness_criteria_yes);
 }
 

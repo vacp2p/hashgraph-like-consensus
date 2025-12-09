@@ -3,7 +3,7 @@ use prost::Message;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 
@@ -339,8 +339,8 @@ pub fn validate_threshold(threshold: f64) -> Result<(), ConsensusError> {
 }
 
 /// Validate that a timeout is greater than 0.
-pub fn validate_timeout(timeout: u64) -> Result<(), ConsensusError> {
-    if timeout == 0 {
+pub fn validate_timeout(timeout: Duration) -> Result<(), ConsensusError> {
+    if timeout.is_zero() {
         return Err(ConsensusError::InvalidTimeout);
     }
     Ok(())

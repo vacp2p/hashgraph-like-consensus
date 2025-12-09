@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::{
     error::ConsensusError,
     protos::consensus::v1::Proposal,
@@ -47,7 +49,7 @@ impl CreateProposalRequest {
         liveness_criteria_yes: bool,
     ) -> Result<Self, ConsensusError> {
         validate_expected_voters_count(expected_voters_count)?;
-        validate_timeout(expiration_timestamp)?;
+        validate_timeout(Duration::from_secs(expiration_timestamp))?;
         let request = Self {
             name,
             payload,

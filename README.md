@@ -34,6 +34,7 @@ use hashgraph_like_consensus::{
     types::CreateProposalRequest,
 };
 use alloy::signers::local::PrivateKeySigner;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -47,9 +48,9 @@ async fn main() {
             "Upgrade contract".into(),
             "Switch to v2".into(),
             owner.address().as_slice().to_vec(),
-            3,       // expected voters
-            60,      // expiration in seconds
-            true,    // tie-breaker favors YES on equality
+            3,                            // expected voters
+            Duration::from_secs(60),      // expiration in seconds
+            true,                         // tie-breaker favors YES on equality
         ).unwrap(),
     ).await.unwrap();
 

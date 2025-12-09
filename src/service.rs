@@ -182,30 +182,31 @@ where
     /// # Example
     /// ```rust,no_run
     /// use hashgraph_like_consensus::{scope_config::NetworkType, scope::ScopeID, service::DefaultConsensusService};
+    /// use std::time::Duration;
     ///
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let service = DefaultConsensusService::default();
-    /// let scope = ScopeID::from("my_scope");
+    /// async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    ///   let service = DefaultConsensusService::default();
+    ///   let scope = ScopeID::from("my_scope");
     ///
-    /// // Initialize new scope
-    /// service
+    ///   // Initialize new scope
+    ///   service
     ///     .scope(&scope)
     ///     .await?
     ///     .with_network_type(NetworkType::P2P)
     ///     .with_threshold(0.75)
-    ///     .with_timeout(120)
+    ///     .with_timeout(Duration::from_secs(120))
     ///     .initialize()
     ///     .await?;
     ///
-    /// // Update existing scope (single field)
-    /// service
+    ///   // Update existing scope (single field)
+    ///   service
     ///     .scope(&scope)
     ///     .await?
     ///     .with_threshold(0.8)
     ///     .update()
     ///     .await?;
-    /// # Ok(())
-    /// # }
+    ///   Ok(())
+    /// }
     /// ```
     pub async fn scope(
         &self,
@@ -248,7 +249,7 @@ where
         &self,
         scope: &Scope,
         proposal_override: Option<ConsensusConfig>,
-        proposal: Option<&crate::protos::consensus::v1::Proposal>,
+        proposal: Option<&Proposal>,
     ) -> Result<ConsensusConfig, ConsensusError> {
         // 1. If explicit config override exists, use it as base
         let base_config = if let Some(override_config) = proposal_override {
@@ -263,7 +264,7 @@ where
         if let Some(prop) = proposal {
             // Calculate timeout from expiration_timestamp (absolute timestamp) - timestamp (creation time)
             let timeout_seconds = if prop.expiration_timestamp > prop.timestamp {
-                prop.expiration_timestamp - prop.timestamp
+                Duration::from_secs(prop.expiration_timestamp - prop.timestamp)
             } else {
                 base_config.consensus_timeout()
             };
@@ -406,7 +407,12 @@ where
         }
     }
 
-    pub(crate) fn spawn_timeout_task(&self, scope: Scope, proposal_id: u32, timeout_seconds: u64) {
+    pub(crate) fn spawn_timeout_task(
+        &self,
+        scope: Scope,
+        proposal_id: u32,
+        timeout_seconds: Duration,
+    ) {
         let service = self.clone();
         Self::spawn_timeout_task_owned(service, scope, proposal_id, timeout_seconds);
     }
@@ -415,10 +421,10 @@ where
         service: ConsensusService<Scope, S, E>,
         scope: Scope,
         proposal_id: u32,
-        timeout_seconds: u64,
+        timeout_seconds: Duration,
     ) {
         tokio::spawn(async move {
-            sleep(Duration::from_secs(timeout_seconds)).await;
+            sleep(timeout_seconds).await;
 
             if service
                 .get_consensus_result(&scope, proposal_id)
@@ -430,7 +436,7 @@ where
 
             if let Ok(result) = service.handle_consensus_timeout(&scope, proposal_id).await {
                 info!(
-                    "Automatic timeout applied for proposal {proposal_id} in scope {scope:?} after {timeout_seconds}s => {result}"
+                    "Automatic timeout applied for proposal {proposal_id} in scope {scope:?} after {timeout_seconds:?} => {result}"
                 );
             }
         });
@@ -484,7 +490,7 @@ where
     }
 
     /// Set default timeout for proposals (in seconds)
-    pub fn with_timeout(mut self, timeout: u64) -> Self {
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.builder = self.builder.with_timeout(timeout);
         self
     }

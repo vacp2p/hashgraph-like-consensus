@@ -1,5 +1,9 @@
+use std::time::Duration;
+
 use crate::error::ConsensusError;
-use crate::session::ConsensusConfig;
+use crate::utils::{validate_threshold, validate_timeout};
+
+pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Network type determines how rounds and votes are handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,8 +25,8 @@ pub struct ScopeConfig {
     pub network_type: NetworkType,
     /// Default consensus threshold (e.g., 2/3 = 0.667)
     pub default_consensus_threshold: f64,
-    /// Default timeout for proposals in this scope (seconds)
-    pub default_timeout: u64,
+    /// Default timeout for proposals in this scope
+    pub default_timeout: Duration,
     /// Default liveness criteria (how silent peers are counted)
     pub default_liveness_criteria_yes: bool,
     /// Optional: Max rounds override (if None, uses network_type defaults)
@@ -34,7 +38,7 @@ impl Default for ScopeConfig {
         Self {
             network_type: NetworkType::Gossipsub,
             default_consensus_threshold: 2.0 / 3.0,
-            default_timeout: 60,
+            default_timeout: DEFAULT_TIMEOUT,
             default_liveness_criteria_yes: true,
             max_rounds_override: None,
         }
@@ -44,8 +48,8 @@ impl Default for ScopeConfig {
 impl ScopeConfig {
     /// Validate the configuration
     pub fn validate(&self) -> Result<(), ConsensusError> {
-        crate::utils::validate_threshold(self.default_consensus_threshold)?;
-        crate::utils::validate_timeout(self.default_timeout)?;
+        validate_threshold(self.default_consensus_threshold)?;
+        validate_timeout(self.default_timeout)?;
         // Allow max_rounds_override = Some(0) only for P2P networks (triggers dynamic calculation)
         // For Gossipsub networks, max_rounds_override must be greater than 0
         if let Some(max_rounds) = self.max_rounds_override
@@ -64,36 +68,18 @@ impl From<NetworkType> for ScopeConfig {
             NetworkType::Gossipsub => Self {
                 network_type: NetworkType::Gossipsub,
                 default_consensus_threshold: 2.0 / 3.0,
-                default_timeout: 60,
+                default_timeout: DEFAULT_TIMEOUT,
                 default_liveness_criteria_yes: true,
                 max_rounds_override: None,
             },
             NetworkType::P2P => Self {
                 network_type: NetworkType::P2P,
                 default_consensus_threshold: 2.0 / 3.0,
-                default_timeout: 60,
+                default_timeout: DEFAULT_TIMEOUT,
                 default_liveness_criteria_yes: true,
                 max_rounds_override: None,
             },
         }
-    }
-}
-
-impl From<ScopeConfig> for ConsensusConfig {
-    fn from(config: ScopeConfig) -> Self {
-        let (max_rounds, use_gossipsub_rounds) = match config.network_type {
-            NetworkType::Gossipsub => (config.max_rounds_override.unwrap_or(2), true),
-            // 0 triggers dynamic calculation for P2P networks
-            NetworkType::P2P => (config.max_rounds_override.unwrap_or(0), false),
-        };
-
-        ConsensusConfig::new(
-            config.default_consensus_threshold,
-            config.default_timeout,
-            max_rounds,
-            use_gossipsub_rounds,
-            config.default_liveness_criteria_yes,
-        )
     }
 }
 
@@ -121,7 +107,7 @@ impl ScopeConfigBuilder {
     }
 
     /// Set default timeout for proposals (in seconds)
-    pub fn with_timeout(mut self, timeout: u64) -> Self {
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.config.default_timeout = timeout;
         self
     }
@@ -153,7 +139,7 @@ impl ScopeConfigBuilder {
     pub fn p2p_preset(mut self) -> Self {
         self.config.network_type = NetworkType::P2P;
         self.config.default_consensus_threshold = 2.0 / 3.0;
-        self.config.default_timeout = 60;
+        self.config.default_timeout = DEFAULT_TIMEOUT;
         self.config.default_liveness_criteria_yes = true;
         self.config.max_rounds_override = None;
         self
@@ -163,7 +149,7 @@ impl ScopeConfigBuilder {
     pub fn gossipsub_preset(mut self) -> Self {
         self.config.network_type = NetworkType::Gossipsub;
         self.config.default_consensus_threshold = 2.0 / 3.0;
-        self.config.default_timeout = 60;
+        self.config.default_timeout = DEFAULT_TIMEOUT;
         self.config.default_liveness_criteria_yes = true;
         self.config.max_rounds_override = None;
         self
@@ -178,7 +164,7 @@ impl ScopeConfigBuilder {
     /// Use fast consensus (lower threshold = 0.6, shorter timeout = 30s)
     pub fn fast_consensus(mut self) -> Self {
         self.config.default_consensus_threshold = 0.6;
-        self.config.default_timeout = 30;
+        self.config.default_timeout = Duration::from_secs(30);
         self
     }
 
@@ -188,12 +174,12 @@ impl ScopeConfigBuilder {
             NetworkType::P2P => {
                 self.config.network_type = NetworkType::P2P;
                 self.config.default_consensus_threshold = 2.0 / 3.0;
-                self.config.default_timeout = 60;
+                self.config.default_timeout = DEFAULT_TIMEOUT;
             }
             NetworkType::Gossipsub => {
                 self.config.network_type = NetworkType::Gossipsub;
                 self.config.default_consensus_threshold = 2.0 / 3.0;
-                self.config.default_timeout = 60;
+                self.config.default_timeout = DEFAULT_TIMEOUT;
             }
         }
         self
