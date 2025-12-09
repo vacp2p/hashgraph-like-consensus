@@ -1,4 +1,5 @@
 use std::{collections::HashMap, marker::PhantomData};
+use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
 use tracing::info;
 
@@ -434,9 +435,9 @@ where
         scope: Scope,
         proposal_id: u32,
         timeout_seconds: Duration,
-    ) {
+    ) -> JoinHandle<()> {
         let service = self.clone();
-        Self::spawn_timeout_task_owned(service, scope, proposal_id, timeout_seconds);
+        Self::spawn_timeout_task_owned(service, scope, proposal_id, timeout_seconds)
     }
 
     fn spawn_timeout_task_owned(
@@ -444,7 +445,7 @@ where
         scope: Scope,
         proposal_id: u32,
         timeout_seconds: Duration,
-    ) {
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             sleep(timeout_seconds).await;
 
@@ -461,7 +462,7 @@ where
                     "Automatic timeout applied for proposal {proposal_id} in scope {scope:?} after {timeout_seconds:?} => {result}"
                 );
             }
-        });
+        })
     }
 
     fn emit_event(&self, scope: &Scope, event: ConsensusEvent) {
