@@ -12,17 +12,13 @@ use crate::{
     protos::consensus::v1::{Proposal, Vote},
 };
 
+const SIGNATURE_LENGTH: usize = 65;
+const MAX_VOTE_AGE_SECONDS: u64 = 3600;
+
 /// Generate a unique 32-bit ID from a UUID.
-///
-/// Uses the first 4 bytes of a UUID with bit manipulation to create a unique identifier
-/// while avoiding collisions from simple truncation.
 pub fn generate_id() -> u32 {
     let uuid = Uuid::new_v4();
-    let uuid_bytes = uuid.as_bytes();
-    ((uuid_bytes[0] as u32) << 24)
-        | ((uuid_bytes[1] as u32) << 16)
-        | ((uuid_bytes[2] as u32) << 8)
-        | (uuid_bytes[3] as u32)
+    uuid.as_u128() as u32
 }
 
 /// Compute the hash of a vote for signing and validation.
@@ -60,8 +56,7 @@ pub async fn build_vote<S: Signer + Sync>(
         let own_last_vote = proposal
             .votes
             .iter()
-            .rev()
-            .find(|v| v.vote_owner == voter_address);
+            .rfind(|v| v.vote_owner == voter_address);
 
         if let Some(own_vote) = own_last_vote {
             (own_vote.vote_hash.clone(), latest_vote.vote_hash.clone())
@@ -102,11 +97,11 @@ pub fn verify_vote_hash(
     public_key: &[u8],
     message: &[u8],
 ) -> Result<bool, ConsensusError> {
-    let signature_bytes: [u8; 65] =
+    let signature_bytes: [u8; SIGNATURE_LENGTH] =
         signature
             .try_into()
             .map_err(|_| ConsensusError::MismatchedLength {
-                expect: 65,
+                expect: SIGNATURE_LENGTH,
                 actual: signature.len(),
             })?;
     let signature = Signature::from_raw_array(&signature_bytes)?;
@@ -156,6 +151,13 @@ pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusE
         return Err(ConsensusError::EmptySignature);
     }
 
+    if vote.signature.len() != SIGNATURE_LENGTH {
+        return Err(ConsensusError::MismatchedLength {
+            expect: SIGNATURE_LENGTH,
+            actual: vote.signature.len(),
+        });
+    }
+
     let expected_hash = compute_vote_hash(vote);
     if vote.vote_hash != expected_hash {
         return Err(ConsensusError::InvalidVoteHash);
@@ -177,7 +179,7 @@ pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusE
     if vote.timestamp > now {
         return Err(ConsensusError::InvalidVoteTimestamp);
     }
-    const MAX_VOTE_AGE_SECONDS: u64 = 3600;
+
     if now.saturating_sub(vote.timestamp) > MAX_VOTE_AGE_SECONDS {
         return Err(ConsensusError::InvalidVoteTimestamp);
     }
