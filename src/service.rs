@@ -242,7 +242,7 @@ where
 
     /// Resolve configuration for a proposal.
     ///
-    /// Priority: proposal override > proposal fields (expiration_time, liveness_criteria_yes)
+    /// Priority: proposal override > proposal fields (expiration_timestamp, liveness_criteria_yes)
     ///   > scope config > global default
     pub(crate) async fn resolve_config(
         &self,
@@ -261,9 +261,9 @@ where
 
         // 2. Apply proposal field overrides if proposal is provided
         if let Some(prop) = proposal {
-            // Calculate timeout from expiration_time (absolute timestamp) - timestamp (creation time)
-            let timeout_seconds = if prop.expiration_time > prop.timestamp {
-                prop.expiration_time - prop.timestamp
+            // Calculate timeout from expiration_timestamp (absolute timestamp) - timestamp (creation time)
+            let timeout_seconds = if prop.expiration_timestamp > prop.timestamp {
+                prop.expiration_timestamp - prop.timestamp
             } else {
                 base_config.consensus_timeout()
             };
@@ -295,7 +295,7 @@ where
 
                 // RFC Section 2.5.4: Check if proposal has expired
                 let now = current_timestamp()?;
-                if now >= session.proposal.expiration_time {
+                if now >= session.proposal.expiration_timestamp {
                     session.state = ConsensusState::Expired;
                     return Ok(None);
                 }
@@ -349,7 +349,7 @@ where
                 .update_scope_sessions(&scope, |sessions| {
                     for session in sessions.iter_mut() {
                         // RFC Section 2.5.4: Mark expired sessions
-                        if now >= session.proposal.expiration_time
+                        if now >= session.proposal.expiration_timestamp
                             && matches!(session.state, ConsensusState::Active)
                         {
                             session.state = ConsensusState::Expired;

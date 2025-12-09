@@ -145,7 +145,7 @@ where
 
         // RFC Section 2.5.4
         let now = current_timestamp()?;
-        if now >= session.proposal.expiration_time {
+        if now >= session.proposal.expiration_timestamp {
             return Err(ConsensusError::VoteExpired);
         }
 
@@ -222,7 +222,7 @@ where
         let session = self.get_session(scope, vote.proposal_id).await?;
         validate_vote(
             &vote,
-            session.proposal.expiration_time,
+            session.proposal.expiration_timestamp,
             session.proposal.timestamp,
         )?;
         let proposal_id = vote.proposal_id;

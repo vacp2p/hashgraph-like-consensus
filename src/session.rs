@@ -170,7 +170,7 @@ impl ConsensusSession {
         let mut session = Self::new(clean_proposal, config);
         let transition = session.initialize_with_votes(
             existing_votes,
-            proposal.expiration_time,
+            proposal.expiration_timestamp,
             proposal.timestamp,
         )?;
 
@@ -183,7 +183,7 @@ impl ConsensusSession {
             ConsensusState::Active => {
                 // RFC Section 2.5.4: Check if proposal has expired
                 let now = current_timestamp()?;
-                if now >= self.proposal.expiration_time {
+                if now >= self.proposal.expiration_timestamp {
                     self.state = ConsensusState::Expired;
                     return Err(ConsensusError::VoteExpired);
                 }
@@ -211,7 +211,7 @@ impl ConsensusSession {
     pub(crate) fn initialize_with_votes(
         &mut self,
         votes: Vec<Vote>,
-        expiration_time: u64,
+        expiration_timestamp: u64,
         creation_time: u64,
     ) -> Result<SessionTransition, ConsensusError> {
         if !matches!(self.state, ConsensusState::Active) {
@@ -220,7 +220,7 @@ impl ConsensusSession {
 
         // RFC Section 2.5.4: Check if proposal has expired
         let now = current_timestamp()?;
-        if now >= expiration_time {
+        if now >= expiration_timestamp {
             self.state = ConsensusState::Expired;
             return Err(ConsensusError::VoteExpired);
         }
@@ -238,7 +238,7 @@ impl ConsensusSession {
 
         validate_vote_chain(&votes)?;
         for vote in &votes {
-            validate_vote(vote, expiration_time, creation_time)?;
+            validate_vote(vote, expiration_timestamp, creation_time)?;
         }
 
         self.check_round_limit(votes.len())?;
@@ -339,11 +339,11 @@ impl ConsensusSession {
     }
 
     /// Check if this proposal has expired.
-    /// RFC Section 2.5.4: Proposals expire at their expiration_time.
+    /// RFC Section 2.5.4: Proposals expire at their expiration_timestamp.
     pub fn is_expired(&self) -> bool {
         matches!(self.state, ConsensusState::Expired) || {
             let now = current_timestamp().unwrap_or(0);
-            now >= self.proposal.expiration_time
+            now >= self.proposal.expiration_timestamp
         }
     }
 

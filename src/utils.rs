@@ -118,7 +118,7 @@ pub fn verify_vote_hash(
 pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
     // RFC Section 2.5.4: Check proposal expiration
     let now = current_timestamp()?;
-    if now >= proposal.expiration_time {
+    if now >= proposal.expiration_timestamp {
         return Err(ConsensusError::VoteExpired);
     }
 
@@ -126,7 +126,7 @@ pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
         if vote.proposal_id != proposal.proposal_id {
             return Err(ConsensusError::VoteProposalIdMismatch);
         }
-        validate_vote(vote, proposal.expiration_time, proposal.timestamp)?;
+        validate_vote(vote, proposal.expiration_timestamp, proposal.timestamp)?;
     }
     validate_vote_chain(&proposal.votes)?;
     Ok(())
@@ -139,7 +139,7 @@ pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
 /// This prevents replay attacks and ensures vote integrity.
 pub fn validate_vote(
     vote: &Vote,
-    expiration_time: u64,
+    expiration_timestamp: u64,
     creation_time: u64,
 ) -> Result<(), ConsensusError> {
     if vote.vote_owner.is_empty() {
@@ -184,7 +184,7 @@ pub fn validate_vote(
         return Err(ConsensusError::TimestampOlderThanCreationTime);
     }
 
-    if vote.timestamp > expiration_time || now > expiration_time {
+    if vote.timestamp > expiration_timestamp || now > expiration_timestamp {
         return Err(ConsensusError::VoteExpired);
     }
 

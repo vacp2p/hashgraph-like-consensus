@@ -30,8 +30,8 @@ pub struct CreateProposalRequest {
     pub proposal_owner: Vec<u8>,
     /// How many people are expected to vote (used to calculate consensus threshold).
     pub expected_voters_count: u32,
-    /// How long until voting expires, in seconds from creation time.
-    pub expiration_time: u64,
+    /// The timestamp at which the proposal becomes outdated.
+    pub expiration_timestamp: u64,
     /// What happens if votes are tied: `true` means YES wins, `false` means NO wins.
     pub liveness_criteria_yes: bool,
 }
@@ -43,17 +43,17 @@ impl CreateProposalRequest {
         payload: String,
         proposal_owner: Vec<u8>,
         expected_voters_count: u32,
-        expiration_time: u64,
+        expiration_timestamp: u64,
         liveness_criteria_yes: bool,
     ) -> Result<Self, ConsensusError> {
         validate_expected_voters_count(expected_voters_count)?;
-        validate_timeout(expiration_time)?;
+        validate_timeout(expiration_timestamp)?;
         let request = Self {
             name,
             payload,
             proposal_owner,
             expected_voters_count,
-            expiration_time,
+            expiration_timestamp,
             liveness_criteria_yes,
         };
         Ok(request)
@@ -76,7 +76,7 @@ impl CreateProposalRequest {
             expected_voters_count: self.expected_voters_count,
             round: 1,
             timestamp: now,
-            expiration_time: now + self.expiration_time,
+            expiration_timestamp: now + self.expiration_timestamp,
             liveness_criteria_yes: self.liveness_criteria_yes,
         })
     }
