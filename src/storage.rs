@@ -12,7 +12,7 @@ use crate::{
 /// The default `InMemoryConsensusStorage` stores everything in RAM, which is fine
 /// for testing or single-node setups but won't persist across restarts.
 #[async_trait::async_trait]
-pub trait ConsensusStorage<Scope>: Send + Sync + 'static
+pub trait ConsensusStorage<Scope>: Clone + Send + Sync + 'static
 where
     Scope: ConsensusScope,
 {
@@ -85,6 +85,7 @@ where
 ///
 /// Stores all sessions in RAM using a hash map. This is the default storage implementation
 /// and works well for testing or single-node setups. Data is lost when the process exits.
+#[derive(Clone)]
 pub struct InMemoryConsensusStorage<Scope>
 where
     Scope: ConsensusScope,
@@ -121,7 +122,7 @@ where
 #[async_trait::async_trait]
 impl<Scope> ConsensusStorage<Scope> for InMemoryConsensusStorage<Scope>
 where
-    Scope: ConsensusScope,
+    Scope: ConsensusScope + Clone,
 {
     async fn save_session(
         &self,

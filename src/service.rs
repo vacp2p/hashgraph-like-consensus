@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, marker::PhantomData};
 use tokio::time::{Duration, sleep};
 use tracing::info;
 
@@ -23,7 +23,7 @@ where
     S: ConsensusStorage<Scope>,
     E: ConsensusEventBus<Scope>,
 {
-    storage: Arc<S>,
+    storage: S,
     max_sessions_per_scope: usize,
     event_bus: E,
     _scope: PhantomData<Scope>,
@@ -37,7 +37,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            storage: Arc::clone(&self.storage),
+            storage: self.storage.clone(),
             max_sessions_per_scope: self.max_sessions_per_scope,
             event_bus: self.event_bus.clone(),
             _scope: PhantomData,
@@ -64,7 +64,7 @@ impl DefaultConsensusService {
     /// When the limit is reached, older sessions are automatically removed to make room.
     pub fn new_with_max_sessions(max_sessions_per_scope: usize) -> Self {
         Self::new_with_components(
-            Arc::new(InMemoryConsensusStorage::new()),
+            InMemoryConsensusStorage::new(),
             BroadcastEventBus::default(),
             max_sessions_per_scope,
         )
@@ -88,11 +88,7 @@ where
     /// Use this when you need custom persistence (like a database) or event handling.
     /// The `max_sessions_per_scope` parameter controls how many sessions can exist per scope.
     /// When the limit is reached, older sessions are automatically removed.
-    pub fn new_with_components(
-        storage: Arc<S>,
-        event_bus: E,
-        max_sessions_per_scope: usize,
-    ) -> Self {
+    pub fn new_with_components(storage: S, event_bus: E, max_sessions_per_scope: usize) -> Self {
         Self {
             storage,
             max_sessions_per_scope,
