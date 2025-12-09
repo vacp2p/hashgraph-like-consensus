@@ -322,9 +322,7 @@ pub(crate) fn current_timestamp() -> Result<u64, ConsensusError> {
 /// Validate that a consensus threshold is in the valid range [0.0, 1.0].
 pub fn validate_threshold(threshold: f64) -> Result<(), ConsensusError> {
     if !(0.0..=1.0).contains(&threshold) {
-        return Err(ConsensusError::InvalidConsensusThreshold(
-            "consensus_threshold must be between 0.0 and 1.0".to_string(),
-        ));
+        return Err(ConsensusError::InvalidConsensusThreshold);
     }
     Ok(())
 }
@@ -332,18 +330,14 @@ pub fn validate_threshold(threshold: f64) -> Result<(), ConsensusError> {
 /// Validate that a timeout is greater than 0.
 pub fn validate_timeout(timeout: u64) -> Result<(), ConsensusError> {
     if timeout == 0 {
-        return Err(ConsensusError::InvalidProposalConfiguration(
-            "timeout must be greater than 0".to_string(),
-        ));
+        return Err(ConsensusError::InvalidTimeout);
     }
     Ok(())
 }
 
 pub fn validate_expected_voters_count(expected_voters_count: u32) -> Result<(), ConsensusError> {
     if expected_voters_count == 0 {
-        return Err(ConsensusError::InvalidProposalConfiguration(
-            "expected_voters_count must be greater than 0".to_string(),
-        ));
+        return Err(ConsensusError::InvalidExpectedVotersCount);
     }
     Ok(())
 }

@@ -56,9 +56,7 @@ impl ConsensusConfig {
 
     pub fn set_up_rounds(&mut self, max_rounds: u32) -> Result<(), ConsensusError> {
         if max_rounds == 0 {
-            return Err(ConsensusError::InvalidProposalConfiguration(
-                "max_rounds must be greater than 0".to_string(),
-            ));
+            return Err(ConsensusError::InvalidMaxRounds);
         }
         self.max_rounds = max_rounds;
         Ok(())

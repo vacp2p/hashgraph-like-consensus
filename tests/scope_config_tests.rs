@@ -158,7 +158,7 @@ async fn test_scope_config_validation() {
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        ConsensusError::InvalidConsensusThreshold(_)
+        ConsensusError::InvalidConsensusThreshold
     ));
 
     // Test invalid threshold (negative)
@@ -184,7 +184,7 @@ async fn test_scope_config_validation() {
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        ConsensusError::InvalidProposalConfiguration(_)
+        ConsensusError::InvalidTimeout
     ));
 }
 
@@ -245,6 +245,6 @@ async fn test_max_rounds_override_zero_validation() {
     );
     assert!(matches!(
         result.unwrap_err(),
-        ConsensusError::InvalidProposalConfiguration(_)
+        ConsensusError::InvalidMaxRounds
     ));
 }

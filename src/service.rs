@@ -329,15 +329,8 @@ where
                 Ok(consensus_result)
             }
             None => {
-                let reason = "insufficient votes at timeout".to_string();
-                self.emit_event(
-                    scope,
-                    ConsensusEvent::ConsensusFailed {
-                        proposal_id,
-                        reason: reason.clone(),
-                    },
-                );
-                Err(ConsensusError::ConsensusFailed(reason))
+                self.emit_event(scope, ConsensusEvent::ConsensusFailed { proposal_id });
+                Err(ConsensusError::InsufficientVotesAtTimeout)
             }
         }
     }

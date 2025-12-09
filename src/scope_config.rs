@@ -52,9 +52,7 @@ impl ScopeConfig {
             && max_rounds == 0
             && self.network_type == NetworkType::Gossipsub
         {
-            return Err(ConsensusError::InvalidProposalConfiguration(
-                "max_rounds_override must be greater than 0 for Gossipsub networks".to_string(),
-            ));
+            return Err(ConsensusError::InvalidMaxRounds);
         }
         Ok(())
     }

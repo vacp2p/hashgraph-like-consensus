@@ -9,7 +9,7 @@ pub enum ConsensusEvent {
     /// Consensus was reached! The proposal has a final result (yes or no).
     ConsensusReached { proposal_id: u32, result: bool },
     /// Consensus failed - not enough votes were collected before the timeout.
-    ConsensusFailed { proposal_id: u32, reason: String },
+    ConsensusFailed { proposal_id: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
