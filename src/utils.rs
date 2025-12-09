@@ -50,8 +50,9 @@ pub async fn build_vote<S: Signer + Sync>(
     let now = current_timestamp()?;
 
     let voter_address = signer.address().as_slice().to_vec();
+    // RFC Section 2.2: Define `parent_hash` as hash of previous owner's vote (empty if none).
+    // RFC Section 2.3: Set `received_hash` to hash of immediately previous vote (last vote in list).
     let (parent_hash, received_hash) = if let Some(latest_vote) = proposal.votes.last() {
-        // RFC Section 2.4: Find voter's own last vote for parent_hash (may have other votes in between)
         let own_last_vote = proposal
             .votes
             .iter()
@@ -111,16 +112,12 @@ pub fn verify_vote_hash(
 
 /// Validate a proposal and all its votes.
 ///
-/// RFC Section 2.5.4: Checks that the proposal hasn't expired.
+/// Checks that the proposal hasn't expired.
 /// Also validates that all votes belong to this proposal, vote signatures are valid,
 /// and the vote chain (parent_hash/received_hash) is correct.
-/// This is what you call when receiving a proposal from the network.
+/// Should be called when receiving a proposal from the network.
 pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
-    // RFC Section 2.5.4: Check proposal expiration
-    let now = current_timestamp()?;
-    if now >= proposal.expiration_timestamp {
-        return Err(ConsensusError::VoteExpired);
-    }
+    validate_proposal_timestamp(proposal.expiration_timestamp)?;
 
     for vote in proposal.votes.iter() {
         if vote.proposal_id != proposal.proposal_id {
@@ -192,10 +189,7 @@ pub fn validate_vote(
 }
 
 /// Validate that votes form a correct hashgraph chain.
-///
-/// RFC Section 2.3: Validates that each vote's `received_hash` points to the immediately previous vote,
-/// and that each vote's `parent_hash` points to the voter's own previous vote (may have other votes in between).
-/// This ensures votes are properly linked and can't be reordered or tampered with.
+/// RFC Section 2.2 and 2.3.
 pub fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
     if votes.len() <= 1 {
         return Ok(());
@@ -206,8 +200,9 @@ pub fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
         hash_index.insert(&vote.vote_hash, (&vote.vote_owner, vote.timestamp, idx));
     }
 
-    // RFC Section 2.3: received_hash must point to immediately previous vote
     for (idx, vote) in votes.iter().enumerate() {
+        // RFC Section 2.3: If there are multiple votes in a proposal,
+        // check that the hash of a vote is equal to the `received_hash` of the next one.
         if idx > 0 {
             let prev_vote = &votes[idx - 1];
             if !vote.received_hash.is_empty() {
@@ -220,7 +215,8 @@ pub fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
             }
         }
 
-        // RFC Section 2.3: parent_hash must point to voter's own previous vote (may have other votes in between)
+        // RFC Section 2.2: If there are repeated votes from the same sender,
+        // check that the hash of the former vote is equal to the `parent_hash` of the later vote.
         if !vote.parent_hash.is_empty() {
             match hash_index.get(&vote.parent_hash.as_slice()) {
                 Some((owner, ts, parent_idx))
@@ -319,6 +315,19 @@ fn calculate_threshold_based_value(expected_voters: u32, consensus_threshold: f6
 pub(crate) fn current_timestamp() -> Result<u64, ConsensusError> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     Ok(now)
+}
+
+/// Check if a proposal has expired.
+///
+/// RFC Section 2.5.4: Verifies that the proposal has not expired by checking that
+/// the current time is less than the expiration timestamp.
+/// Returns an error if the proposal has expired.
+pub fn validate_proposal_timestamp(expiration_timestamp: u64) -> Result<(), ConsensusError> {
+    let now = current_timestamp()?;
+    if now >= expiration_timestamp {
+        return Err(ConsensusError::ProposalExpired);
+    }
+    Ok(())
 }
 
 /// Validate that a consensus threshold is in the valid range [0.0, 1.0].

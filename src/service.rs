@@ -11,7 +11,7 @@ use crate::{
     session::{ConsensusConfig, ConsensusSession, ConsensusState},
     storage::{ConsensusStorage, InMemoryConsensusStorage},
     types::{ConsensusEvent, SessionTransition},
-    utils::{calculate_consensus_result, current_timestamp, has_sufficient_votes},
+    utils::{calculate_consensus_result, has_sufficient_votes},
 };
 /// The main service that handles proposals, votes, and consensus.
 ///
@@ -280,8 +280,12 @@ where
         }
     }
 
-    /// Handle the timeout for a proposal. If enough votes have been collected, consensus is reached.
-    /// If the proposal has expired, it's marked as expired. Otherwise, it's marked as failed.
+    /// Handle the timeout for a proposal.
+    ///
+    /// First checks if consensus has already been reached and returns the result if so.
+    /// Otherwise, calculates consensus from current votes. If consensus is reached, marks
+    /// the session as ConsensusReached and returns the result. If no consensus, marks the
+    /// session as Failed and returns an error.
     pub async fn handle_consensus_timeout(
         &self,
         scope: &Scope,
@@ -293,13 +297,8 @@ where
                     return Ok(Some(result));
                 }
 
-                // RFC Section 2.5.4: Check if proposal has expired
-                let now = current_timestamp()?;
-                if now >= session.proposal.expiration_timestamp {
-                    session.state = ConsensusState::Expired;
-                    return Ok(None);
-                }
-
+                // Try to calculate consensus result first - if we have enough votes, return the result
+                // even if the proposal has technically expired
                 let result = calculate_consensus_result(
                     &session.votes,
                     session.proposal.expected_voters_count,
@@ -333,35 +332,6 @@ where
                 Err(ConsensusError::InsufficientVotesAtTimeout)
             }
         }
-    }
-
-    /// Clean up expired proposals across all scopes.
-    ///
-    /// RFC Section 2.5.4: Removes proposals that have passed their expiration time and are no longer active.
-    /// Call this periodically to keep your storage from growing indefinitely.
-    pub async fn cleanup_expired_sessions(&self) -> Result<(), ConsensusError> {
-        let scopes = self.storage.list_scopes().await?;
-
-        let now = current_timestamp()?;
-
-        for scope in scopes {
-            self.storage
-                .update_scope_sessions(&scope, |sessions| {
-                    for session in sessions.iter_mut() {
-                        // RFC Section 2.5.4: Mark expired sessions
-                        if now >= session.proposal.expiration_timestamp
-                            && matches!(session.state, ConsensusState::Active)
-                        {
-                            session.state = ConsensusState::Expired;
-                        }
-                    }
-                    sessions.retain(|session| !session.is_expired());
-                    Ok(())
-                })
-                .await?;
-        }
-
-        Ok(())
     }
 
     pub(crate) async fn get_session(

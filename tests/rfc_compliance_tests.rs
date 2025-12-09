@@ -34,7 +34,7 @@ fn owner_bytes(signer: &PrivateKeySigner) -> Vec<u8> {
     signer.address().as_slice().to_vec()
 }
 
-/// RFC Section 1: Test that proposal initialization has round = 1
+/// Test that proposal initialization has round = 1
 #[tokio::test]
 async fn test_proposal_initialization_round_is_one() {
     let service = DefaultConsensusService::default();
@@ -58,10 +58,7 @@ async fn test_proposal_initialization_round_is_one() {
         .await
         .expect("proposal should be created");
 
-    assert_eq!(
-        proposal.round, 1,
-        "RFC Section 1: Proposal should start with round = 1"
-    );
+    assert_eq!(proposal.round, 1, "Proposal should start with round = 1");
 }
 
 /// RFC Section 2.5.3: Test that round increments when votes are added (P2P mode)
@@ -823,7 +820,7 @@ async fn test_expired_proposal_rejected() {
         .expect_err("Should reject vote on expired proposal");
 
     assert!(
-        matches!(err, ConsensusError::VoteExpired),
+        matches!(err, ConsensusError::ProposalExpired),
         "RFC Section 2.5.4: Should reject votes on expired proposals"
     );
 }

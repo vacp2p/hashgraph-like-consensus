@@ -9,7 +9,7 @@ use crate::{
     session::{ConsensusConfig, ConsensusSession},
     storage::ConsensusStorage,
     types::CreateProposalRequest,
-    utils::{build_vote, current_timestamp, validate_vote},
+    utils::{build_vote, validate_proposal_timestamp, validate_vote},
 };
 
 impl<Scope, S, E> ConsensusService<Scope, S, E>
@@ -143,11 +143,7 @@ where
     ) -> Result<Vote, ConsensusError> {
         let session = self.get_session(scope, proposal_id).await?;
 
-        // RFC Section 2.5.4
-        let now = current_timestamp()?;
-        if now >= session.proposal.expiration_timestamp {
-            return Err(ConsensusError::VoteExpired);
-        }
+        validate_proposal_timestamp(session.proposal.expiration_timestamp)?;
 
         let voter_address = signer.address().as_slice().to_vec();
         if session.votes.contains_key(&voter_address) {

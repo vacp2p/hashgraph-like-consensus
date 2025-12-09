@@ -6,7 +6,7 @@ use crate::{
     types::SessionTransition,
     utils::{
         calculate_consensus_result, calculate_max_rounds, current_timestamp, validate_proposal,
-        validate_vote, validate_vote_chain,
+        validate_proposal_timestamp, validate_vote, validate_vote_chain,
     },
 };
 
@@ -117,8 +117,6 @@ pub enum ConsensusState {
     Active,
     /// Voting closed with a boolean result.
     ConsensusReached(bool),
-    /// Proposal expired before reaching consensus.
-    Expired,
     /// Consensus could not be determined (typically on timeout with insufficient votes).
     Failed,
 }
@@ -164,7 +162,7 @@ impl ConsensusSession {
         let existing_votes = proposal.votes.clone();
         let mut clean_proposal = proposal.clone();
         clean_proposal.votes.clear();
-        // RFC Section 1: Proposals start with round = 1 (proposal creation)
+        // Always start with round 1 for new proposals as we at least have the proposal owner's vote.
         clean_proposal.round = 1;
 
         let mut session = Self::new(clean_proposal, config);
@@ -181,12 +179,7 @@ impl ConsensusSession {
     pub(crate) fn add_vote(&mut self, vote: Vote) -> Result<SessionTransition, ConsensusError> {
         match self.state {
             ConsensusState::Active => {
-                // RFC Section 2.5.4: Check if proposal has expired
-                let now = current_timestamp()?;
-                if now >= self.proposal.expiration_timestamp {
-                    self.state = ConsensusState::Expired;
-                    return Err(ConsensusError::VoteExpired);
-                }
+                validate_proposal_timestamp(self.proposal.expiration_timestamp)?;
 
                 // Check if adding this vote would exceed round limits
                 self.check_round_limit(1)?;
@@ -201,7 +194,6 @@ impl ConsensusSession {
                 Ok(self.check_consensus())
             }
             ConsensusState::ConsensusReached(res) => Ok(SessionTransition::ConsensusReached(res)),
-            ConsensusState::Expired => Err(ConsensusError::VoteExpired),
             _ => Err(ConsensusError::SessionNotActive),
         }
     }
@@ -218,12 +210,7 @@ impl ConsensusSession {
             return Err(ConsensusError::SessionNotActive);
         }
 
-        // RFC Section 2.5.4: Check if proposal has expired
-        let now = current_timestamp()?;
-        if now >= expiration_timestamp {
-            self.state = ConsensusState::Expired;
-            return Err(ConsensusError::VoteExpired);
-        }
+        validate_proposal_timestamp(expiration_timestamp)?;
 
         if votes.is_empty() {
             return Ok(SessionTransition::StillActive);
@@ -336,15 +323,6 @@ impl ConsensusSession {
     /// Check if this proposal is still accepting votes.
     pub fn is_active(&self) -> bool {
         matches!(self.state, ConsensusState::Active)
-    }
-
-    /// Check if this proposal has expired.
-    /// RFC Section 2.5.4: Proposals expire at their expiration_timestamp.
-    pub fn is_expired(&self) -> bool {
-        matches!(self.state, ConsensusState::Expired) || {
-            let now = current_timestamp().unwrap_or(0);
-            now >= self.proposal.expiration_timestamp
-        }
     }
 
     /// Get the consensus result if one has been reached.

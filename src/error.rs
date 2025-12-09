@@ -12,7 +12,7 @@ pub enum ConsensusError {
     #[error("max_rounds must be greater than 0")]
     InvalidMaxRounds,
 
-    // Vote Validation Errors
+    // Vote and Proposal Validation Errors
     #[error("Invalid vote signature")]
     InvalidVoteSignature,
     #[error("Empty signature")]
@@ -29,6 +29,8 @@ pub enum ConsensusError {
     InvalidVoteHash,
     #[error("Empty vote hash")]
     EmptyVoteHash,
+    #[error("Proposal expired")]
+    ProposalExpired,
     #[error("Vote proposal_id mismatch: vote belongs to different proposal")]
     VoteProposalIdMismatch,
     #[error("Received hash mismatch")]
