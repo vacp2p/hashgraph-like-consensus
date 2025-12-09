@@ -13,7 +13,6 @@ use crate::{
 };
 
 const SIGNATURE_LENGTH: usize = 65;
-const MAX_VOTE_AGE_SECONDS: u64 = 3600;
 
 /// Generate a unique 32-bit ID from a UUID.
 pub fn generate_id() -> u32 {
@@ -175,12 +174,8 @@ pub fn validate_vote(vote: &Vote, expiration_time: u64) -> Result<(), ConsensusE
 
     let now = current_timestamp()?;
 
-    // RFC Section 3.4: Reject future timestamps and votes older than 1 hour (replay attack protection)
+    // RFC Section 3.4: timestamp validation for replay attack protection
     if vote.timestamp > now {
-        return Err(ConsensusError::InvalidVoteTimestamp);
-    }
-
-    if now.saturating_sub(vote.timestamp) > MAX_VOTE_AGE_SECONDS {
         return Err(ConsensusError::InvalidVoteTimestamp);
     }
 
