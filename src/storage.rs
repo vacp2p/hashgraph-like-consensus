@@ -1,5 +1,7 @@
-use parking_lot::RwLock;
+use async_stream::try_stream;
+use futures::Stream;
 use std::{collections::HashMap, sync::Arc};
+use tokio::sync::RwLock;
 
 use crate::{
     error::ConsensusError, scope::ConsensusScope, scope_config::ScopeConfig,
@@ -37,6 +39,11 @@ where
         &self,
         scope: &Scope,
     ) -> impl Future<Output = Result<Option<Vec<ConsensusSession>>, ConsensusError>> + Send;
+
+    fn stream_scope_sessions<'a>(
+        &'a self,
+        scope: &'a Scope,
+    ) -> impl Stream<Item = Result<ConsensusSession, ConsensusError>> + Send + 'a;
 
     fn replace_scope_sessions(
         &self,
@@ -136,7 +143,7 @@ where
         scope: &Scope,
         session: ConsensusSession,
     ) -> Result<(), ConsensusError> {
-        let mut sessions = self.sessions.write();
+        let mut sessions = self.sessions.write().await;
         let entry = sessions.entry(scope.clone()).or_default();
         entry.insert(session.proposal.proposal_id, session);
         Ok(())
@@ -147,7 +154,7 @@ where
         scope: &Scope,
         proposal_id: u32,
     ) -> Result<Option<ConsensusSession>, ConsensusError> {
-        let sessions = self.sessions.read();
+        let sessions = self.sessions.read().await;
         Ok(sessions
             .get(scope)
             .and_then(|scope| scope.get(&proposal_id))
@@ -159,7 +166,7 @@ where
         scope: &Scope,
         proposal_id: u32,
     ) -> Result<Option<ConsensusSession>, ConsensusError> {
-        let mut sessions = self.sessions.write();
+        let mut sessions = self.sessions.write().await;
         Ok(sessions
             .get_mut(scope)
             .and_then(|scope| scope.remove(&proposal_id)))
@@ -169,11 +176,26 @@ where
         &self,
         scope: &Scope,
     ) -> Result<Option<Vec<ConsensusSession>>, ConsensusError> {
-        let sessions = self.sessions.read();
+        let sessions = self.sessions.read().await;
         let result = sessions
             .get(scope)
             .map(|scope| scope.values().cloned().collect::<Vec<ConsensusSession>>());
         Ok(result)
+    }
+
+    fn stream_scope_sessions<'a>(
+        &'a self,
+        scope: &'a Scope,
+    ) -> impl Stream<Item = Result<ConsensusSession, ConsensusError>> + Send + 'a {
+        try_stream! {
+            let guard = self.sessions.read().await;
+
+            if let Some(inner_map) = guard.get(scope) {
+                for session in inner_map.values() {
+                    yield session.clone();
+                }
+            }
+        }
     }
 
     async fn replace_scope_sessions(
@@ -181,7 +203,7 @@ where
         scope: &Scope,
         sessions_list: Vec<ConsensusSession>,
     ) -> Result<(), ConsensusError> {
-        let mut sessions = self.sessions.write();
+        let mut sessions = self.sessions.write().await;
         let new_map = sessions_list
             .into_iter()
             .map(|session| (session.proposal.proposal_id, session))
@@ -191,7 +213,7 @@ where
     }
 
     async fn list_scopes(&self) -> Result<Option<Vec<Scope>>, ConsensusError> {
-        let sessions = self.sessions.read();
+        let sessions = self.sessions.read().await;
         let result = sessions.keys().cloned().collect::<Vec<Scope>>();
         if result.is_empty() {
             return Ok(None);
@@ -209,7 +231,7 @@ where
         R: Send,
         F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError> + Send,
     {
-        let mut sessions = self.sessions.write();
+        let mut sessions = self.sessions.write().await;
         let session = sessions
             .get_mut(scope)
             .and_then(|scope_sessions| scope_sessions.get_mut(&proposal_id))
@@ -227,7 +249,7 @@ where
     where
         F: FnOnce(&mut Vec<ConsensusSession>) -> Result<(), ConsensusError> + Send,
     {
-        let mut sessions = self.sessions.write();
+        let mut sessions = self.sessions.write().await;
         let scope_sessions = sessions.entry(scope.clone()).or_default();
 
         let mut sessions_vec: Vec<ConsensusSession> = scope_sessions.values().cloned().collect();
@@ -248,7 +270,7 @@ where
     }
 
     async fn get_scope_config(&self, scope: &Scope) -> Result<Option<ScopeConfig>, ConsensusError> {
-        let configs = self.scope_configs.read();
+        let configs = self.scope_configs.read().await;
         Ok(configs.get(scope).cloned())
     }
 
@@ -258,7 +280,7 @@ where
         config: ScopeConfig,
     ) -> Result<(), ConsensusError> {
         config.validate()?;
-        let mut configs = self.scope_configs.write();
+        let mut configs = self.scope_configs.write().await;
         configs.insert(scope.clone(), config);
         Ok(())
     }
@@ -267,7 +289,7 @@ where
     where
         F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError> + Send,
     {
-        let mut configs = self.scope_configs.write();
+        let mut configs = self.scope_configs.write().await;
         let config = configs.entry(scope.clone()).or_default();
         updater(config)?;
         config.validate()?;
