@@ -1,7 +1,5 @@
 use std::{collections::HashMap, marker::PhantomData};
-use tokio::task::JoinHandle;
-use tokio::time::{Duration, sleep};
-use tracing::info;
+use tokio::time::Duration;
 
 use crate::{
     error::ConsensusError,
@@ -428,41 +426,6 @@ where
                 },
             );
         }
-    }
-
-    pub(crate) fn spawn_timeout_task(
-        &self,
-        scope: Scope,
-        proposal_id: u32,
-        timeout_seconds: Duration,
-    ) -> JoinHandle<()> {
-        let service = self.clone();
-        Self::spawn_timeout_task_owned(service, scope, proposal_id, timeout_seconds)
-    }
-
-    fn spawn_timeout_task_owned(
-        service: ConsensusService<Scope, S, E>,
-        scope: Scope,
-        proposal_id: u32,
-        timeout_seconds: Duration,
-    ) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            sleep(timeout_seconds).await;
-
-            if service
-                .get_consensus_result(&scope, proposal_id)
-                .await
-                .is_ok()
-            {
-                return;
-            }
-
-            if let Ok(result) = service.handle_consensus_timeout(&scope, proposal_id).await {
-                info!(
-                    "Automatic timeout applied for proposal {proposal_id} in scope {scope:?} after {timeout_seconds:?} => {result}"
-                );
-            }
-        })
     }
 
     fn emit_event(&self, scope: &Scope, event: ConsensusEvent) {

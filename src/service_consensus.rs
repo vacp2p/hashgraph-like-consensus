@@ -116,7 +116,6 @@ where
         config: Option<ConsensusConfig>,
     ) -> Result<Proposal, ConsensusError> {
         let proposal = request.into_proposal()?;
-        let proposal_id = proposal.proposal_id;
 
         // Resolve config: override > scope config > global default, aligning timeout with proposal
         let config = self.resolve_config(scope, config, Some(&proposal)).await?;
@@ -124,7 +123,6 @@ where
         let (session, _) = ConsensusSession::from_proposal(proposal.clone(), config.clone())?;
         self.save_session(scope, session).await?;
         self.trim_scope_sessions(scope).await?;
-        self.spawn_timeout_task(scope.clone(), proposal_id, config.consensus_timeout());
 
         Ok(proposal)
     }
