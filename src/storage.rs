@@ -11,72 +11,80 @@ use crate::{
 /// Implement this to use your own storage backend (database, file system, etc.).
 /// The default `InMemoryConsensusStorage` stores everything in RAM, which is fine
 /// for testing or single-node setups but won't persist across restarts.
-#[async_trait::async_trait]
 pub trait ConsensusStorage<Scope>: Clone + Send + Sync + 'static
 where
     Scope: ConsensusScope,
 {
-    async fn save_session(
+    fn save_session(
         &self,
         scope: &Scope,
         session: ConsensusSession,
-    ) -> Result<(), ConsensusError>;
+    ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
 
-    async fn get_session(
+    fn get_session(
         &self,
         scope: &Scope,
         proposal_id: u32,
-    ) -> Result<Option<ConsensusSession>, ConsensusError>;
+    ) -> impl Future<Output = Result<Option<ConsensusSession>, ConsensusError>> + Send;
 
-    async fn remove_session(
+    fn remove_session(
         &self,
         scope: &Scope,
         proposal_id: u32,
-    ) -> Result<Option<ConsensusSession>, ConsensusError>;
+    ) -> impl Future<Output = Result<Option<ConsensusSession>, ConsensusError>> + Send;
 
-    async fn list_scope_sessions(
+    fn list_scope_sessions(
         &self,
         scope: &Scope,
-    ) -> Result<Option<Vec<ConsensusSession>>, ConsensusError>;
+    ) -> impl Future<Output = Result<Option<Vec<ConsensusSession>>, ConsensusError>> + Send;
 
-    async fn replace_scope_sessions(
+    fn replace_scope_sessions(
         &self,
         scope: &Scope,
         sessions: Vec<ConsensusSession>,
-    ) -> Result<(), ConsensusError>;
+    ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
 
-    async fn list_scopes(&self) -> Result<Option<Vec<Scope>>, ConsensusError>;
+    fn list_scopes(
+        &self,
+    ) -> impl Future<Output = Result<Option<Vec<Scope>>, ConsensusError>> + Send;
 
-    async fn update_session<R, F>(
+    fn update_session<R, F>(
         &self,
         scope: &Scope,
         proposal_id: u32,
         mutator: F,
-    ) -> Result<R, ConsensusError>
+    ) -> impl Future<Output = Result<R, ConsensusError>> + Send
     where
         R: Send,
         F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError> + Send;
 
-    async fn update_scope_sessions<F>(
+    fn update_scope_sessions<F>(
         &self,
         scope: &Scope,
         mutator: F,
-    ) -> Result<(), ConsensusError>
+    ) -> impl Future<Output = Result<(), ConsensusError>> + Send
     where
         F: FnOnce(&mut Vec<ConsensusSession>) -> Result<(), ConsensusError> + Send;
 
     /// Get scope configuration (defaults for proposals in this scope)
-    async fn get_scope_config(&self, scope: &Scope) -> Result<Option<ScopeConfig>, ConsensusError>;
+    fn get_scope_config(
+        &self,
+        scope: &Scope,
+    ) -> impl Future<Output = Result<Option<ScopeConfig>, ConsensusError>> + Send;
 
     /// Set scope configuration
-    async fn set_scope_config(
+    fn set_scope_config(
         &self,
         scope: &Scope,
         config: ScopeConfig,
-    ) -> Result<(), ConsensusError>;
+    ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
 
     /// Update scope configuration
-    async fn update_scope_config<F>(&self, scope: &Scope, updater: F) -> Result<(), ConsensusError>
+    fn update_scope_config<F>(
+        &self,
+        scope: &Scope,
+        updater: F,
+    ) -> impl Future<Output = Result<(), ConsensusError>> + Send
     where
         F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError> + Send;
 }
@@ -119,7 +127,6 @@ where
     }
 }
 
-#[async_trait::async_trait]
 impl<Scope> ConsensusStorage<Scope> for InMemoryConsensusStorage<Scope>
 where
     Scope: ConsensusScope + Clone,

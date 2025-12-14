@@ -1714,7 +1714,6 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "alloy-signer",
- "async-trait",
  "futures",
  "parking_lot",
  "prost",
