@@ -6,7 +6,7 @@ use crate::{
     utils::{current_timestamp, generate_id, validate_expected_voters_count, validate_timeout},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsensusEvent {
     /// Consensus was reached! The proposal has a final result (yes or no).
     ConsensusReached {
