@@ -66,12 +66,24 @@ impl ConsensusConfig {
         ConsensusConfig::from(NetworkType::Gossipsub)
     }
 
-    pub fn set_up_rounds(&mut self, max_rounds: u32) -> Result<(), ConsensusError> {
-        if max_rounds == 0 {
-            return Err(ConsensusError::InvalidMaxRounds);
-        }
-        self.max_rounds = max_rounds;
-        Ok(())
+    /// Set consensus timeout (validated) and return the updated config.
+    pub fn with_timeout(mut self, consensus_timeout: Duration) -> Result<Self, ConsensusError> {
+        crate::utils::validate_timeout(consensus_timeout)?;
+        self.consensus_timeout = consensus_timeout;
+        Ok(self)
+    }
+
+    /// Set consensus threshold (validated) and return the updated config.
+    pub fn with_threshold(mut self, consensus_threshold: f64) -> Result<Self, ConsensusError> {
+        crate::utils::validate_threshold(consensus_threshold)?;
+        self.consensus_threshold = consensus_threshold;
+        Ok(self)
+    }
+
+    /// Set liveness criteria and return the updated config.
+    pub fn with_liveness_criteria(mut self, liveness_criteria: bool) -> Self {
+        self.liveness_criteria = liveness_criteria;
+        self
     }
 
     /// Create a new ConsensusConfig with the given values.
@@ -381,8 +393,7 @@ mod tests {
         .unwrap();
 
         let proposal = request.into_proposal().unwrap();
-        let mut config = ConsensusConfig::gossipsub();
-        config.set_up_rounds(2).unwrap();
+        let config = ConsensusConfig::gossipsub();
         let mut session = ConsensusSession::new(proposal, config);
 
         // Round 1 -> Round 2 (first vote)
@@ -409,12 +420,14 @@ mod tests {
 
     #[tokio::test]
     async fn enforce_max_rounds_p2p() {
-        // P2P: max_rounds = 2 means maximum 2 votes
-        // Round 1 = 0 votes, Round 2 = 1 vote, Round 3 = 2 votes
-        // So max_rounds = 2 allows up to round 3 (2 votes)
+        // P2P defaults: max_rounds = 0 triggers dynamic calculation based on expected voters.
+        // For threshold=2/3 and expected_voters=5, max_round_limit = ceil(2n/3) = 4 votes.
+        // Round 1 = 0 votes, Round 2 = 1 vote, ... Round 5 = 4 votes.
         let signer1 = PrivateKeySigner::random();
         let signer2 = PrivateKeySigner::random();
         let signer3 = PrivateKeySigner::random();
+        let signer4 = PrivateKeySigner::random();
+        let signer5 = PrivateKeySigner::random();
 
         let request = CreateProposalRequest::new(
             "Test".into(),
@@ -427,8 +440,7 @@ mod tests {
         .unwrap();
 
         let proposal = request.into_proposal().unwrap();
-        let mut config = ConsensusConfig::p2p();
-        config.set_up_rounds(2).unwrap();
+        let config = ConsensusConfig::p2p();
         let mut session = ConsensusSession::new(proposal, config);
 
         // Round 1 -> Round 2 (first vote, 1 vote total)
@@ -443,9 +455,21 @@ mod tests {
         assert_eq!(session.proposal.round, 3);
         assert_eq!(session.votes.len(), 2);
 
-        // Third vote would be round 4 (3 votes total), which exceeds max_rounds = 2
+        // Round 3 -> Round 4 (third vote, 3 votes total) - should succeed
         let vote3 = build_vote(&session.proposal, true, signer3).await.unwrap();
-        let err = session.add_vote(vote3).unwrap_err();
+        session.add_vote(vote3).unwrap();
+        assert_eq!(session.proposal.round, 4);
+        assert_eq!(session.votes.len(), 3);
+
+        // Round 4 -> Round 5 (fourth vote, 4 votes total) - should succeed (dynamic limit = 4)
+        let vote4 = build_vote(&session.proposal, true, signer4).await.unwrap();
+        session.add_vote(vote4).unwrap();
+        assert_eq!(session.proposal.round, 5);
+        assert_eq!(session.votes.len(), 4);
+
+        // Fifth vote would exceed dynamic max_round_limit (=4 votes)
+        let vote5 = build_vote(&session.proposal, true, signer5).await.unwrap();
+        let err = session.add_vote(vote5).unwrap_err();
         assert!(matches!(err, ConsensusError::MaxRoundsExceeded));
     }
 }

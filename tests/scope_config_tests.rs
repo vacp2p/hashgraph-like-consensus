@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use hashgraph_like_consensus::{
     error::ConsensusError, scope::ScopeID, scope_config::NetworkType,
-    service::DefaultConsensusService,
+    service::DefaultConsensusService, session::ConsensusConfig, types::CreateProposalRequest,
 };
 
 const SCOPE_NAME: &str = "test_scope";
@@ -252,4 +252,36 @@ async fn test_max_rounds_override_zero_validation() {
         result.unwrap_err(),
         ConsensusError::InvalidMaxRounds
     ));
+}
+
+#[tokio::test]
+async fn create_proposal_with_config_preserves_override_timeout() {
+    let service = DefaultConsensusService::default();
+    let scope = ScopeID::from("test_scope");
+
+    let request = CreateProposalRequest::new(
+        "Test".to_string(),
+        "".to_string(),
+        vec![0u8; 20],
+        3,
+        60, // proposal expiry in 60 seconds
+        true,
+    )
+    .unwrap();
+
+    let override_config = ConsensusConfig::gossipsub()
+        .with_timeout(Duration::from_secs(120))
+        .unwrap();
+
+    let proposal = service
+        .create_proposal_with_config(&scope, request, Some(override_config))
+        .await
+        .unwrap();
+
+    let resolved = service
+        .get_proposal_config(&scope, proposal.proposal_id)
+        .await
+        .unwrap();
+
+    assert_eq!(resolved.consensus_timeout(), Duration::from_secs(120));
 }

@@ -147,6 +147,16 @@ where
         Ok(Some(result))
     }
 
+    /// Get the resolved per-proposal consensus configuration for an existing session.
+    pub async fn get_proposal_config(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> Result<ConsensusConfig, ConsensusError> {
+        let session = self.get_session(scope, proposal_id).await?;
+        Ok(session.config)
+    }
+
     /// Get all proposals that have reached consensus, along with their results.
     ///
     /// Returns a map from proposal ID to result (`true` for YES, `false` for NO).
@@ -270,6 +280,9 @@ where
         proposal: Option<&Proposal>,
     ) -> Result<ConsensusConfig, ConsensusError> {
         // 1. If explicit config override exists, use it as base
+        // NOTE: if a per-proposal override is provided, we should not stomp its timeout
+        // from the proposal's expiration fields (the caller explicitly chose it).
+        let has_explicit_override = proposal_override.is_some();
         let base_config = if let Some(override_config) = proposal_override {
             override_config
         } else if let Some(scope_config) = self.storage.get_scope_config(scope).await? {
@@ -280,8 +293,11 @@ where
 
         // 2. Apply proposal field overrides if proposal is provided
         if let Some(prop) = proposal {
-            // Calculate timeout from expiration_timestamp (absolute timestamp) - timestamp (creation time)
-            let timeout_seconds = if prop.expiration_timestamp > prop.timestamp {
+            // Calculate timeout from expiration_timestamp (absolute timestamp) - timestamp (creation time),
+            // unless an explicit override was supplied.
+            let timeout_seconds = if has_explicit_override {
+                base_config.consensus_timeout()
+            } else if prop.expiration_timestamp > prop.timestamp {
                 Duration::from_secs(prop.expiration_timestamp - prop.timestamp)
             } else {
                 base_config.consensus_timeout()
