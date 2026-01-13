@@ -9,9 +9,13 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum ConsensusEvent {
     /// Consensus was reached! The proposal has a final result (yes or no).
-    ConsensusReached { proposal_id: u32, result: bool },
+    ConsensusReached {
+        proposal_id: u32,
+        result: bool,
+        timestamp: u64,
+    },
     /// Consensus failed - not enough votes were collected before the timeout.
-    ConsensusFailed { proposal_id: u32 },
+    ConsensusFailed { proposal_id: u32, timestamp: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

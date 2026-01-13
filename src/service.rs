@@ -10,7 +10,7 @@ use crate::{
     session::{ConsensusConfig, ConsensusSession, ConsensusState},
     storage::{ConsensusStorage, InMemoryConsensusStorage},
     types::{ConsensusEvent, SessionTransition},
-    utils::{calculate_consensus_result, has_sufficient_votes},
+    utils::{calculate_consensus_result, current_timestamp, has_sufficient_votes},
 };
 /// The main service that handles proposals, votes, and consensus.
 ///
@@ -342,12 +342,19 @@ where
                     ConsensusEvent::ConsensusReached {
                         proposal_id,
                         result: consensus_result,
+                        timestamp: current_timestamp()?,
                     },
                 );
                 Ok(consensus_result)
             }
             None => {
-                self.emit_event(scope, ConsensusEvent::ConsensusFailed { proposal_id });
+                self.emit_event(
+                    scope,
+                    ConsensusEvent::ConsensusFailed {
+                        proposal_id,
+                        timestamp: current_timestamp()?,
+                    },
+                );
                 Err(ConsensusError::InsufficientVotesAtTimeout)
             }
         }
@@ -423,6 +430,7 @@ where
                 ConsensusEvent::ConsensusReached {
                     proposal_id,
                     result,
+                    timestamp: current_timestamp().unwrap_or(0),
                 },
             );
         }

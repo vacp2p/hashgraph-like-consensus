@@ -210,6 +210,7 @@ async fn test_consensus_threshold_emits_event() {
                 && let ConsensusEvent::ConsensusReached {
                     proposal_id: event_proposal_id,
                     result,
+                    timestamp: _event_timestamp,
                 } = event
                 && proposal_id == event_proposal_id
             {
@@ -325,6 +326,7 @@ async fn test_handle_consensus_timeout_reaches_consensus() {
                 && let ConsensusEvent::ConsensusReached {
                     proposal_id: event_proposal_id,
                     result: event_result,
+                    timestamp: _event_timestamp,
                 } = event
                 && event_proposal_id == proposal.proposal_id
             {
@@ -388,6 +390,7 @@ async fn test_handle_consensus_timeout_insufficient_votes() {
             if event_scope == scope
                 && let ConsensusEvent::ConsensusFailed {
                     proposal_id: event_proposal_id,
+                    timestamp: _event_timestamp,
                 } = event
                 && event_proposal_id == proposal.proposal_id
             {
@@ -462,6 +465,7 @@ async fn test_handle_consensus_timeout_no_votes() {
             if event_scope == scope
                 && let ConsensusEvent::ConsensusFailed {
                     proposal_id: event_proposal_id,
+                    timestamp: _event_timestamp,
                 } = event
                 && event_proposal_id == proposal.proposal_id
             {
