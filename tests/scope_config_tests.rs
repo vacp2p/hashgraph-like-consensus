@@ -6,6 +6,7 @@ use hashgraph_like_consensus::{
 };
 
 const SCOPE_NAME: &str = "test_scope";
+const PROPOSAL_PAYLOAD: Vec<u8> = vec![];
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_DOUBLE_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_SHORT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -261,7 +262,7 @@ async fn create_proposal_with_config_preserves_override_timeout() {
 
     let request = CreateProposalRequest::new(
         "Test".to_string(),
-        "".to_string(),
+        PROPOSAL_PAYLOAD,
         vec![0u8; 20],
         3,
         60, // proposal expiry in 60 seconds

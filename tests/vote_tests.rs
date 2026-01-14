@@ -10,7 +10,7 @@ use hashgraph_like_consensus::{
 
 const SCOPE: &str = "vote_scope";
 const PROPOSAL_NAME: &str = "Vote Test Proposal";
-const PROPOSAL_PAYLOAD: &str = "";
+const PROPOSAL_PAYLOAD: Vec<u8> = vec![];
 
 const EXPIRATION: u64 = 120;
 const EXPECTED_VOTERS_COUNT: u32 = 3;
@@ -33,7 +33,7 @@ async fn test_received_hash_for_new_voter() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT,
                 EXPIRATION,
@@ -80,7 +80,7 @@ async fn test_parent_hash_for_same_voter() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT,
                 EXPIRATION,

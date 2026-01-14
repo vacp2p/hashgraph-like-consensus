@@ -4,7 +4,7 @@ package consensus.v1;
 // Proposal represents a consensus proposal that needs voting
 message Proposal {
     string name = 10;                   // Proposal name
-    string payload = 11;                // Payload with the proposal data
+    bytes payload = 11;                // Payload with the proposal data
     uint32 proposal_id = 12;            // Unique identifier of the proposal
     bytes proposal_owner = 13;          // Public key of the creator 
     repeated Vote votes = 14;           // Vote list in the proposal

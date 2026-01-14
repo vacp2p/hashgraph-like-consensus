@@ -13,7 +13,7 @@ use hashgraph_like_consensus::{
 
 const SCOPE: &str = "validation_scope";
 const PROPOSAL_NAME: &str = "Proposal";
-const PROPOSAL_PAYLOAD: &str = "";
+const PROPOSAL_PAYLOAD: Vec<u8> = vec![];
 
 const EXPIRATION: u64 = 120;
 
@@ -38,7 +38,7 @@ async fn test_vote_created_with_helper_is_valid() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 EXPIRATION,
@@ -77,7 +77,7 @@ async fn test_invalid_signature_is_rejected() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_2,
                 EXPIRATION,
@@ -126,7 +126,7 @@ async fn test_vote_chain_validation_rejects_bad_received_hash() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 EXPIRATION,

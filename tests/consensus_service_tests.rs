@@ -13,7 +13,7 @@ use hashgraph_like_consensus::{
 const SCOPE1_NAME: &str = "scope1";
 const SCOPE2_NAME: &str = "scope2";
 const PROPOSAL_NAME: &str = "Test Proposal";
-const PROPOSAL_PAYLOAD: &str = "";
+const PROPOSAL_PAYLOAD: Vec<u8> = vec![];
 const PROPOSAL_EXPIRATION_TIME: u64 = 60;
 
 const EXPECTED_VOTERS_COUNT_4: u32 = 4;
@@ -38,7 +38,7 @@ async fn test_basic_consensus_flow() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 PROPOSAL_EXPIRATION_TIME,
@@ -107,7 +107,7 @@ async fn test_multi_scope_isolation() {
             &scope1,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&signer1),
                 EXPECTED_VOTERS_COUNT_2,
                 PROPOSAL_EXPIRATION_TIME,
@@ -129,7 +129,7 @@ async fn test_multi_scope_isolation() {
             &scope2,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&signer2),
                 EXPECTED_VOTERS_COUNT_1,
                 PROPOSAL_EXPIRATION_TIME,
@@ -178,7 +178,7 @@ async fn test_consensus_threshold_emits_event() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_4,
                 PROPOSAL_EXPIRATION_TIME,
@@ -238,7 +238,7 @@ async fn test_handle_consensus_timeout_already_reached() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_2,
                 PROPOSAL_EXPIRATION_TIME,
@@ -287,7 +287,7 @@ async fn test_handle_consensus_timeout_reaches_consensus() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 PROPOSAL_EXPIRATION_TIME,
@@ -355,7 +355,7 @@ async fn test_handle_consensus_timeout_insufficient_votes() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_4,
                 PROPOSAL_EXPIRATION_TIME,
@@ -436,7 +436,7 @@ async fn test_handle_consensus_timeout_no_votes() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 PROPOSAL_EXPIRATION_TIME,
@@ -510,7 +510,7 @@ async fn test_get_reached_proposals_with_consensus() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_1,
                 PROPOSAL_EXPIRATION_TIME,
@@ -564,7 +564,7 @@ async fn test_get_reached_proposals_no_consensus() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 PROPOSAL_EXPIRATION_TIME,
@@ -604,7 +604,7 @@ async fn test_get_reached_proposals_mixed_states() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&proposal_owner1),
                 EXPECTED_VOTERS_COUNT_1,
                 PROPOSAL_EXPIRATION_TIME,
@@ -627,7 +627,7 @@ async fn test_get_reached_proposals_mixed_states() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&proposal_owner2),
                 EXPECTED_VOTERS_COUNT_1,
                 PROPOSAL_EXPIRATION_TIME,
@@ -650,7 +650,7 @@ async fn test_get_reached_proposals_mixed_states() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 proposal_owner_from_signer(&proposal_owner3),
                 EXPECTED_VOTERS_COUNT_3,
                 PROPOSAL_EXPIRATION_TIME,

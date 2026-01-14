@@ -31,7 +31,7 @@ pub struct CreateProposalRequest {
     /// A short name for the proposal (e.g., "Upgrade to v2").
     pub name: String,
     /// Additional details about what's being voted on.
-    pub payload: String,
+    pub payload: Vec<u8>,
     /// The address (public key bytes) of whoever created this proposal.
     pub proposal_owner: Vec<u8>,
     /// How many people are expected to vote (used to calculate consensus threshold).
@@ -46,7 +46,7 @@ impl CreateProposalRequest {
     /// Create a new proposal request with validation.
     pub fn new(
         name: String,
-        payload: String,
+        payload: Vec<u8>,
         proposal_owner: Vec<u8>,
         expected_voters_count: u32,
         expiration_timestamp: u64,

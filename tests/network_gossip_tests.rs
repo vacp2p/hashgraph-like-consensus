@@ -8,7 +8,7 @@ use hashgraph_like_consensus::{
 
 const SCOPE: &str = "network_gossip_scope";
 const PROPOSAL_NAME: &str = "Network Gossip Proposal";
-const PROPOSAL_PAYLOAD: &str = "";
+const PROPOSAL_PAYLOAD: Vec<u8> = vec![];
 const EXPIRATION: u64 = 120;
 
 fn owner_bytes(signer: &PrivateKeySigner) -> Vec<u8> {
@@ -29,7 +29,7 @@ async fn test_two_peers_gossip_reaches_unanimous_yes_for_n2() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&owner_a),
                 2, // n=2 => unanimous YES required
                 EXPIRATION,
@@ -97,7 +97,7 @@ async fn test_three_peers_gossip_converges_with_out_of_order_delivery() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&owner_a),
                 3,
                 EXPIRATION,
@@ -184,7 +184,7 @@ async fn test_multi_peer_timeout_task_converges_to_failed() {
             &scope,
             CreateProposalRequest::new(
                 "Timeout Proposal".to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&owner_a),
                 4,
                 EXPIRATION,
@@ -282,7 +282,7 @@ async fn test_multi_peer_timeout_task_resolves_tie_by_liveness_criteria_yes() {
             &scope,
             CreateProposalRequest::new(
                 "Timeout Tie Proposal".to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&owner_a),
                 4,
                 EXPIRATION,
