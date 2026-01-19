@@ -10,7 +10,7 @@ use hashgraph_like_consensus::{
 
 const SCOPE: &str = "concurrency_scope";
 const PROPOSAL_NAME: &str = "Concurrency Test";
-const PROPOSAL_PAYLOAD: &str = "";
+const PROPOSAL_PAYLOAD: Vec<u8> = vec![];
 
 const EXPIRATION: u64 = 120;
 const EXPIRATION_WAIT_TIME: u64 = 100;
@@ -39,7 +39,7 @@ async fn test_concurrent_vote_casting() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_10,
                 EXPIRATION,
@@ -98,7 +98,7 @@ async fn test_concurrent_proposal_operations() {
                     &scope_clone,
                     CreateProposalRequest::new(
                         format!("Proposal {i}"),
-                        PROPOSAL_PAYLOAD.to_string(),
+                        PROPOSAL_PAYLOAD,
                         owner_bytes(&proposal_owner),
                         EXPECTED_VOTERS_COUNT_3,
                         EXPIRATION,
@@ -136,7 +136,7 @@ async fn test_concurrent_duplicate_vote_rejection() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 EXPIRATION,
