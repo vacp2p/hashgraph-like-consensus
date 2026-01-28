@@ -23,6 +23,7 @@ pub mod protos {
     }
 }
 
+pub mod api;
 pub mod error;
 pub mod events;
 pub mod scope;

@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
 use hashgraph_like_consensus::{
+    api::ConsensusServiceAPI,
     error::ConsensusError,
     scope::ScopeID,
     service::DefaultConsensusService,
