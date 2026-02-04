@@ -224,4 +224,22 @@ where
         self.handle_transition(scope, proposal_id, transition);
         Ok(())
     }
+
+    async fn get_proposal(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> Result<Proposal, ConsensusError> {
+        let session = self.get_session(scope, proposal_id).await?;
+        Ok(session.proposal)
+    }
+
+    async fn get_proposal_payload(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> Result<Vec<u8>, ConsensusError> {
+        let session = self.get_session(scope, proposal_id).await?;
+        Ok(session.proposal.payload)
+    }
 }

@@ -53,4 +53,15 @@ where
         scope: &Scope,
         vote: Vote,
     ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
+
+    fn get_proposal(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> impl Future<Output = Result<Proposal, ConsensusError>> + Send;
+    fn get_proposal_payload(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> impl Future<Output = Result<Vec<u8>, ConsensusError>> + Send;
 }
