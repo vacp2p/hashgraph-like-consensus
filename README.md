@@ -1,6 +1,8 @@
 # Hashgraph-like Consensus
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Crates.io](https://img.shields.io/crates/v/hashgraph-like-consensus.svg)](https://crates.io/crates/hashgraph-like-consensus)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/vacp2p/hashgraph-like-consensus/ci.yml?branch=main&label=CI)](https://github.com/vacp2p/hashgraph-like-consensus/actions)
 
 A lightweight Rust library for making binary decisions in peer-to-peer or gossipsub networks.
 Perfect for group governance, voting systems, or any scenario where you need distributed agreement.
