@@ -1,6 +1,7 @@
 use alloy_signer::Signer;
 
 use crate::{
+    api::ConsensusServiceAPI,
     error::ConsensusError,
     events::ConsensusEventBus,
     protos::consensus::v1::{Proposal, Vote},
@@ -12,7 +13,7 @@ use crate::{
     utils::{build_vote, validate_proposal_timestamp, validate_vote},
 };
 
-impl<Scope, S, E> ConsensusService<Scope, S, E>
+impl<Scope, S, E> ConsensusServiceAPI<Scope, S, E> for ConsensusService<Scope, S, E>
 where
     Scope: ConsensusScope,
     S: ConsensusStorage<Scope>,
@@ -56,7 +57,7 @@ where
     ///     Ok(())
     /// }
     /// ```
-    pub async fn create_proposal(
+    async fn create_proposal(
         &self,
         scope: &Scope,
         request: CreateProposalRequest,
@@ -109,7 +110,7 @@ where
     ///     Ok(())
     /// }
     /// ```
-    pub async fn create_proposal_with_config(
+    async fn create_proposal_with_config(
         &self,
         scope: &Scope,
         request: CreateProposalRequest,
@@ -132,7 +133,7 @@ where
     /// Vote is cryptographically signed and linked to previous votes in the hashgraph.
     /// Returns the signed vote, which you can then send to other peers in the network.
     /// Each voter can only vote once per proposal.
-    pub async fn cast_vote<SN: Signer + Sync>(
+    async fn cast_vote<SN: Signer + Sync + Send>(
         &self,
         scope: &Scope,
         proposal_id: u32,
@@ -166,7 +167,7 @@ where
     /// This is a convenience method that combines `cast_vote` and fetching the proposal.
     /// Useful for proposal creator as they can immediately see the proposal with their vote
     /// and share it with other peers.
-    pub async fn cast_vote_and_get_proposal<SN: Signer + Sync>(
+    async fn cast_vote_and_get_proposal<SN: Signer + Sync + Send>(
         &self,
         scope: &Scope,
         proposal_id: u32,
@@ -185,7 +186,7 @@ where
     /// If it necessary the consensus configuration is resolved from the proposal.
     /// If the proposal already has enough votes, consensus is reached
     /// immediately and an event is emitted.
-    pub async fn process_incoming_proposal(
+    async fn process_incoming_proposal(
         &self,
         scope: &Scope,
         proposal: Proposal,
@@ -208,11 +209,7 @@ where
     /// The vote is validated (signature, timestamp, vote chain) and added to the proposal.
     /// If this vote brings the total to the consensus threshold, consensus is reached and
     /// an event is emitted.
-    pub async fn process_incoming_vote(
-        &self,
-        scope: &Scope,
-        vote: Vote,
-    ) -> Result<(), ConsensusError> {
+    async fn process_incoming_vote(&self, scope: &Scope, vote: Vote) -> Result<(), ConsensusError> {
         let session = self.get_session(scope, vote.proposal_id).await?;
         validate_vote(
             &vote,
@@ -226,5 +223,23 @@ where
 
         self.handle_transition(scope, proposal_id, transition);
         Ok(())
+    }
+
+    async fn get_proposal(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> Result<Proposal, ConsensusError> {
+        let session = self.get_session(scope, proposal_id).await?;
+        Ok(session.proposal)
+    }
+
+    async fn get_proposal_payload(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> Result<Vec<u8>, ConsensusError> {
+        let session = self.get_session(scope, proposal_id).await?;
+        Ok(session.proposal.payload)
     }
 }

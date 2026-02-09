@@ -2,8 +2,8 @@ use alloy::signers::local::PrivateKeySigner;
 use tokio::time::{Duration, sleep};
 
 use hashgraph_like_consensus::{
-    error::ConsensusError, scope::ScopeID, service::DefaultConsensusService,
-    session::ConsensusConfig, types::CreateProposalRequest,
+    api::ConsensusServiceAPI, error::ConsensusError, scope::ScopeID,
+    service::DefaultConsensusService, session::ConsensusConfig, types::CreateProposalRequest,
 };
 
 const SCOPE: &str = "network_gossip_scope";

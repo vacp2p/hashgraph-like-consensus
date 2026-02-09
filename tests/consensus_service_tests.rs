@@ -3,6 +3,7 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 use hashgraph_like_consensus::{
+    api::ConsensusServiceAPI,
     error::ConsensusError,
     scope::ScopeID,
     service::DefaultConsensusService,

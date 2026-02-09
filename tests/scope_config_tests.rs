@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use hashgraph_like_consensus::{
-    error::ConsensusError, scope::ScopeID, scope_config::NetworkType,
+    api::ConsensusServiceAPI, error::ConsensusError, scope::ScopeID, scope_config::NetworkType,
     service::DefaultConsensusService, session::ConsensusConfig, types::CreateProposalRequest,
 };
 
