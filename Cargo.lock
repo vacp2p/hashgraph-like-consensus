@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "hashgraph-like-consensus"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "alloy",
  "alloy-signer",
