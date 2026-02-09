@@ -1,3 +1,9 @@
+//! Low-level helpers for hashing, signing, validation, and consensus calculation.
+//!
+//! Most users won't need this module directly — the higher-level
+//! [`ConsensusService`](crate::service::ConsensusService) API calls these internally.
+//! They are public for advanced use cases or custom integrations.
+
 use alloy_signer::{Signature, Signer};
 use prost::Message;
 use sha2::{Digest, Sha256};
@@ -290,6 +296,10 @@ pub fn calculate_consensus_result(
     None
 }
 
+/// Calculate the minimum number of votes needed to potentially reach consensus.
+///
+/// For `n <= 2`, all voters must participate. For `n > 2`, applies the threshold
+/// formula `ceil(n * threshold)`.
 pub fn calculate_required_votes(expected_voters: u32, consensus_threshold: f64) -> u32 {
     // RFC Section 4: For n ≤ 2, require all votes. For n > 2, use threshold (default 2n/3)
     if expected_voters <= 2 {
@@ -299,6 +309,7 @@ pub fn calculate_required_votes(expected_voters: u32, consensus_threshold: f64) 
     }
 }
 
+/// Calculate the dynamic round cap for P2P networks (`ceil(2n/3)` by default).
 pub fn calculate_max_rounds(expected_voters: u32, consensus_threshold: f64) -> u32 {
     calculate_threshold_based_value(expected_voters, consensus_threshold)
 }
@@ -346,6 +357,7 @@ pub fn validate_timeout(timeout: Duration) -> Result<(), ConsensusError> {
     Ok(())
 }
 
+/// Validate that `expected_voters_count` is at least 1.
 pub fn validate_expected_voters_count(expected_voters_count: u32) -> Result<(), ConsensusError> {
     if expected_voters_count == 0 {
         return Err(ConsensusError::InvalidExpectedVotersCount);

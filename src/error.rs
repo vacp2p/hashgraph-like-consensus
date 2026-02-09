@@ -1,5 +1,12 @@
+//! Error types for the consensus library.
+//!
+//! All fallible operations return [`ConsensusError`]. Variants are grouped into
+//! configuration validation, vote/proposal validation, session state, and
+//! consensus result categories.
+
 use alloy::primitives::SignatureError;
 
+/// Enumerates everything that can go wrong during consensus operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ConsensusError {
     // Configuration Validation Errors

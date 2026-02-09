@@ -1,3 +1,10 @@
+//! Scope-level configuration for consensus defaults.
+//!
+//! A [`ScopeConfig`] holds per-scope defaults (network type, threshold, timeout,
+//! liveness criteria) that every proposal in the scope inherits unless overridden.
+//! Use [`ScopeConfigBuilder`] (via [`ConsensusService::scope()`](crate::service::ConsensusService::scope))
+//! to create or update configurations.
+
 use std::time::Duration;
 
 use crate::error::ConsensusError;

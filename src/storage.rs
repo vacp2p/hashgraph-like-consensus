@@ -1,3 +1,9 @@
+//! Storage trait and default in-memory implementation.
+//!
+//! Implement [`ConsensusStorage`] to persist consensus sessions to a database or
+//! other durable backend. The provided [`InMemoryConsensusStorage`] keeps everything
+//! in RAM and is suitable for testing or single-node deployments.
+
 use async_stream::try_stream;
 use futures::Stream;
 use std::{collections::HashMap, sync::Arc};
@@ -17,44 +23,52 @@ pub trait ConsensusStorage<Scope>: Clone + Send + Sync + 'static
 where
     Scope: ConsensusScope,
 {
+    /// Persist a session (insert or overwrite by `proposal_id`).
     fn save_session(
         &self,
         scope: &Scope,
         session: ConsensusSession,
     ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
 
+    /// Retrieve a session by proposal ID, or `None` if it doesn't exist.
     fn get_session(
         &self,
         scope: &Scope,
         proposal_id: u32,
     ) -> impl Future<Output = Result<Option<ConsensusSession>, ConsensusError>> + Send;
 
+    /// Remove and return a session, or `None` if not found.
     fn remove_session(
         &self,
         scope: &Scope,
         proposal_id: u32,
     ) -> impl Future<Output = Result<Option<ConsensusSession>, ConsensusError>> + Send;
 
+    /// List all sessions in a scope, or `None` if the scope doesn't exist.
     fn list_scope_sessions(
         &self,
         scope: &Scope,
     ) -> impl Future<Output = Result<Option<Vec<ConsensusSession>>, ConsensusError>> + Send;
 
+    /// Stream sessions in a scope one at a time (useful for large scopes).
     fn stream_scope_sessions<'a>(
         &'a self,
         scope: &'a Scope,
     ) -> impl Stream<Item = Result<ConsensusSession, ConsensusError>> + Send + 'a;
 
+    /// Replace all sessions in a scope atomically.
     fn replace_scope_sessions(
         &self,
         scope: &Scope,
         sessions: Vec<ConsensusSession>,
     ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
 
+    /// List all known scopes, or `None` if no scopes exist.
     fn list_scopes(
         &self,
     ) -> impl Future<Output = Result<Option<Vec<Scope>>, ConsensusError>> + Send;
 
+    /// Apply a mutation to a single session in place.
     fn update_session<R, F>(
         &self,
         scope: &Scope,
@@ -65,6 +79,7 @@ where
         R: Send,
         F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError> + Send;
 
+    /// Apply a mutation to all sessions in a scope (e.g. trimming old entries).
     fn update_scope_sessions<F>(
         &self,
         scope: &Scope,
@@ -73,20 +88,20 @@ where
     where
         F: FnOnce(&mut Vec<ConsensusSession>) -> Result<(), ConsensusError> + Send;
 
-    /// Get scope configuration (defaults for proposals in this scope)
+    /// Get the scope-level configuration, or `None` if not yet initialized.
     fn get_scope_config(
         &self,
         scope: &Scope,
     ) -> impl Future<Output = Result<Option<ScopeConfig>, ConsensusError>> + Send;
 
-    /// Set scope configuration
+    /// Set (insert or overwrite) the scope-level configuration.
     fn set_scope_config(
         &self,
         scope: &Scope,
         config: ScopeConfig,
     ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
 
-    /// Update scope configuration
+    /// Apply a mutation to an existing scope configuration.
     fn update_scope_config<F>(
         &self,
         scope: &Scope,

@@ -1,3 +1,5 @@
+//! Implementation of [`ConsensusServiceAPI`] for [`ConsensusService`].
+
 use alloy_signer::Signer;
 
 use crate::{
@@ -30,8 +32,8 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use hashgraph_like_consensus::{scope::ScopeID, scope_config::NetworkType,
-    /// service::DefaultConsensusService, types::CreateProposalRequest};
+    /// use hashgraph_like_consensus::{api::ConsensusServiceAPI, scope::ScopeID,
+    /// scope_config::NetworkType, service::DefaultConsensusService, types::CreateProposalRequest};
     ///
     /// async fn example() -> Result<(), Box<dyn std::error::Error>> {
     ///     let service = DefaultConsensusService::default();
@@ -47,7 +49,7 @@ where
     ///
     ///     let request = CreateProposalRequest::new(
     ///         "Test Proposal".to_string(),
-    ///         "payload".to_string(),
+    ///         b"payload".to_vec(),
     ///         vec![0u8; 20],
     ///         3,
     ///         100,
@@ -73,7 +75,7 @@ where
     /// # Examples
     ///
     /// ```rust
-    /// use hashgraph_like_consensus::{scope::ScopeID,
+    /// use hashgraph_like_consensus::{api::ConsensusServiceAPI, scope::ScopeID,
     /// service::DefaultConsensusService, session::ConsensusConfig, types::CreateProposalRequest};
     ///
     /// async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -81,7 +83,7 @@ where
     ///     let scope = ScopeID::from("my_scope");
     ///     let request = CreateProposalRequest::new(
     ///         "Test Proposal".to_string(),
-    ///         "payload".to_string(),
+    ///         b"payload".to_vec(),
     ///         vec![0u8; 20],
     ///         3,
     ///         100,
@@ -96,7 +98,7 @@ where
     ///
     ///     let request2 = CreateProposalRequest::new(
     ///         "Another Proposal".to_string(),
-    ///         "payload2".to_string(),
+    ///         b"payload2".to_vec(),
     ///         vec![0u8; 20],
     ///         3,
     ///         100,
