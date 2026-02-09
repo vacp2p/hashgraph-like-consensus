@@ -9,14 +9,14 @@ use hashgraph_like_consensus::{
 
 const SCOPE: &str = "stream_scope";
 const MISSING_SCOPE: &str = "missing_stream_scope";
-const PROPOSAL_PAYLOAD: &str = "";
+const PROPOSAL_PAYLOAD: Vec<u8> = vec![];
 const EXPIRATION: u64 = 120;
 const EXPECTED_VOTERS_COUNT: u32 = 3;
 
 fn make_session(name: &str) -> ConsensusSession {
     let proposal = CreateProposalRequest::new(
         name.to_string(),
-        PROPOSAL_PAYLOAD.to_string(),
+        PROPOSAL_PAYLOAD,
         vec![1, 2, 3], // arbitrary "owner" bytes; signature not needed for storage tests
         EXPECTED_VOTERS_COUNT,
         EXPIRATION,

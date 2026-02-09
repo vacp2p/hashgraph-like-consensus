@@ -6,12 +6,16 @@ use crate::{
     utils::{current_timestamp, generate_id, validate_expected_voters_count, validate_timeout},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsensusEvent {
     /// Consensus was reached! The proposal has a final result (yes or no).
-    ConsensusReached { proposal_id: u32, result: bool },
+    ConsensusReached {
+        proposal_id: u32,
+        result: bool,
+        timestamp: u64,
+    },
     /// Consensus failed - not enough votes were collected before the timeout.
-    ConsensusFailed { proposal_id: u32 },
+    ConsensusFailed { proposal_id: u32, timestamp: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +31,7 @@ pub struct CreateProposalRequest {
     /// A short name for the proposal (e.g., "Upgrade to v2").
     pub name: String,
     /// Additional details about what's being voted on.
-    pub payload: String,
+    pub payload: Vec<u8>,
     /// The address (public key bytes) of whoever created this proposal.
     pub proposal_owner: Vec<u8>,
     /// How many people are expected to vote (used to calculate consensus threshold).
@@ -42,7 +46,7 @@ impl CreateProposalRequest {
     /// Create a new proposal request with validation.
     pub fn new(
         name: String,
-        payload: String,
+        payload: Vec<u8>,
         proposal_owner: Vec<u8>,
         expected_voters_count: u32,
         expiration_timestamp: u64,

@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
 use hashgraph_like_consensus::{
+    api::ConsensusServiceAPI,
     error::ConsensusError,
     scope::ScopeID,
     service::DefaultConsensusService,
@@ -14,7 +15,7 @@ use hashgraph_like_consensus::{
 
 const SCOPE: &str = "rfc_compliance_scope";
 const PROPOSAL_NAME: &str = "RFC Compliance Test";
-const PROPOSAL_PAYLOAD: &str = "";
+const PROPOSAL_PAYLOAD: Vec<u8> = vec![];
 
 const EXPIRATION: u64 = 120;
 const EXPIRATION_WAIT_TIME: u64 = 100;
@@ -46,7 +47,7 @@ async fn test_proposal_initialization_round_is_one() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 EXPIRATION,
@@ -73,7 +74,7 @@ async fn test_round_increments_on_vote_p2p() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 EXPIRATION,
@@ -126,7 +127,7 @@ async fn test_gossipsub_rounds_stay_at_two() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 5, // 5 expected voters, need 3 YES for consensus
                 EXPIRATION,
@@ -202,7 +203,7 @@ async fn test_gossipsub_allows_multiple_votes_in_round_two() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 12, // 12 expected voters
                 EXPIRATION,
@@ -260,7 +261,7 @@ async fn test_p2p_dynamic_max_rounds() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 9, // 9 expected voters, ceil(2n/3) = 6
                 EXPIRATION,
@@ -346,7 +347,7 @@ async fn test_p2p_ceil_calculation_edge_cases() {
                 &scope,
                 CreateProposalRequest::new(
                     format!("Test n={}", n),
-                    PROPOSAL_PAYLOAD.to_string(),
+                    PROPOSAL_PAYLOAD,
                     owner_bytes(&proposal_owner),
                     n,
                     EXPIRATION,
@@ -397,7 +398,7 @@ async fn test_gossipsub_batch_vote_processing() {
     // Create a proposal manually (simulating receiving from network)
     let request = CreateProposalRequest::new(
         PROPOSAL_NAME.to_string(),
-        PROPOSAL_PAYLOAD.to_string(),
+        PROPOSAL_PAYLOAD,
         owner_bytes(&proposal_owner),
         5,
         EXPIRATION,
@@ -465,7 +466,7 @@ async fn test_p2p_batch_vote_processing() {
     // Create a P2P proposal manually (simulating receiving from network)
     let request = CreateProposalRequest::new(
         PROPOSAL_NAME.to_string(),
-        PROPOSAL_PAYLOAD.to_string(),
+        PROPOSAL_PAYLOAD,
         owner_bytes(&proposal_owner),
         9, // ceil(2*9/3) = 6 votes max
         EXPIRATION,
@@ -550,7 +551,7 @@ async fn test_consensus_reachable_in_both_modes() {
             &scope1,
             CreateProposalRequest::new(
                 "Gossipsub Consensus".to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&owner1),
                 6, // Need 4 YES votes for consensus (>6/2 = >3)
                 EXPIRATION,
@@ -589,7 +590,7 @@ async fn test_consensus_reachable_in_both_modes() {
             &scope2,
             CreateProposalRequest::new(
                 "P2P Consensus".to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&owner2),
                 6, // Need 4 YES votes for consensus
                 EXPIRATION,
@@ -633,7 +634,7 @@ async fn test_n_le_2_requires_unanimous_yes() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_1,
                 EXPIRATION,
@@ -665,7 +666,7 @@ async fn test_n_le_2_requires_unanimous_yes() {
             &scope2,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner2),
                 EXPECTED_VOTERS_COUNT_2,
                 EXPIRATION,
@@ -703,7 +704,7 @@ async fn test_n_le_2_requires_unanimous_yes() {
             &scope3,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner3),
                 EXPECTED_VOTERS_COUNT_2,
                 EXPIRATION,
@@ -752,7 +753,7 @@ async fn test_n_gt_2_consensus_requirements() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 EXPIRATION,
@@ -814,7 +815,7 @@ async fn test_expired_proposal_rejected() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 EXPIRATION_1_SECOND,
@@ -851,7 +852,7 @@ async fn test_timestamp_replay_attack_protection() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_3,
                 EXPIRATION,
@@ -918,7 +919,7 @@ async fn test_equality_of_votes_handling() {
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner),
                 EXPECTED_VOTERS_COUNT_4,
                 EXPIRATION,
@@ -977,7 +978,7 @@ async fn test_equality_of_votes_handling() {
             &scope2,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD.to_string(),
+                PROPOSAL_PAYLOAD,
                 owner_bytes(&proposal_owner2),
                 EXPECTED_VOTERS_COUNT_4,
                 EXPIRATION,
