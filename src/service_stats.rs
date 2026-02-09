@@ -1,8 +1,11 @@
+//! Scope-level statistics for monitoring consensus activity.
+
 use crate::{
     events::ConsensusEventBus, scope::ConsensusScope, service::ConsensusService,
     session::ConsensusState, storage::ConsensusStorage,
 };
 
+/// Aggregate counters for all sessions within a single scope.
 #[derive(Debug, Clone)]
 pub struct ConsensusStats {
     /// Total number of proposals in this scope.
