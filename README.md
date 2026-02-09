@@ -3,31 +3,32 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Crates.io](https://img.shields.io/crates/v/hashgraph-like-consensus.svg)](https://crates.io/crates/hashgraph-like-consensus)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/vacp2p/hashgraph-like-consensus/ci.yml?branch=main&label=CI)](https://github.com/vacp2p/hashgraph-like-consensus/actions)
+[![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)](https://doc.rust-lang.org/edition-guide/)
 
 A lightweight Rust library for making binary decisions in peer-to-peer or gossipsub networks.
 Perfect for group governance, voting systems, or any scenario where you need distributed agreement.
 
-## What is this?
+## Features
 
-This library helps groups of peers vote on proposals and reach consensus,
-even when some peers are offline or trying to cause trouble.
-It's based on the [Hashgraph-like Consensus Protocol RFC](https://github.com/vacp2p/rfc-index/blob/main/vac/raw/consensus-hashgraphlike.md), which means:
+- **Fast** - Reaches consensus in O(log n) rounds
+- **Byzantine fault tolerant** - Correct even if up to 1/3 of peers are malicious
+- **Pluggable storage** - In-memory by default; implement `ConsensusStorage` for persistence
+- **Network-agnostic** - Works with both Gossipsub (fixed 2-round) and P2P (dynamic rounds) topologies
+- **Event-driven** - Subscribe to consensus outcomes via a broadcast event bus
+- **Cryptographic integrity** - Votes are signed with secp256k1 and chained in a hashgraph structure
 
-- **Fast**: Reaches consensus in O(log n) rounds, so it scales well
-- **Secure**: Works correctly even if up to 1/3 of peers are malicious (Byzantine fault tolerant)
-- **Simple**: Easy to embed in your application with a clean API
+Based on the [Hashgraph-like Consensus Protocol RFC](https://github.com/vacp2p/rfc-index/blob/main/vac/raw/consensus-hashgraphlike.md).
 
-## How it works
+## Installation
 
-1. Someone creates a proposal (like "Should we upgrade to version 2?")
-2. Peers vote yes or no, with each vote cryptographically signed
-3. Votes link together in a hashgraph structure (like a blockchain, but more efficient)
-4. Once enough votes are collected, consensus is reached and everyone knows the result
+Add to your `Cargo.toml`:
 
-The library handles all the tricky parts: validating signatures,
-checking vote chains, managing timeouts, and determining when consensus is reached.
+```toml
+[dependencies]
+hashgraph-like-consensus = { git = "https://github.com/vacp2p/hashgraph-like-consensus" }
+```
 
-## Quick start
+## Quick Start
 
 ```rust
 use hashgraph_like_consensus::{
@@ -36,48 +37,80 @@ use hashgraph_like_consensus::{
     types::CreateProposalRequest,
 };
 use alloy::signers::local::PrivateKeySigner;
-use std::time::Duration;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = DefaultConsensusService::default();
     let scope = ScopeID::from("example-scope");
-    let owner = PrivateKeySigner::random();
+    let signer = PrivateKeySigner::random();
 
-    let proposal = service.create_proposal(
-        &scope,
-        CreateProposalRequest::new(
-            "Upgrade contract".into(),
-            "Switch to v2".into(),
-            owner.address().as_slice().to_vec(),
-            3,                            // expected voters
-            Duration::from_secs(60),      // expiration in seconds
-            true,                         // tie-breaker favors YES on equality
-        ).unwrap(),
-    ).await.unwrap();
+    // Create a proposal
+    let proposal = service
+        .create_proposal(
+            &scope,
+            CreateProposalRequest::new(
+                "Upgrade contract".into(),   // name
+                b"Switch to v2".to_vec(),     // payload (bytes)
+                signer.address().as_slice().to_vec(), // owner
+                3,                           // expected voters
+                60,                          // expiration (seconds from now)
+                true,                        // tie-breaker: YES wins on equality
+            )?,
+        )
+        .await?;
 
-    let vote = service.cast_vote(&scope, proposal.proposal_id, true, owner).await.unwrap();
-    println!("Recorded vote {:?}", vote.vote_id);
+    // Cast a vote
+    let vote = service
+        .cast_vote(&scope, proposal.proposal_id, true, signer)
+        .await?;
+    println!("Recorded vote {}", vote.vote_id);
+
+    Ok(())
 }
 ```
 
-## API Overview
+## Core Concepts
 
-### Configuring a Scope
+### Scopes and Proposals
 
-#### Scope vs Proposal Relationship
+A **scope** groups related proposals together and carries default configuration
+(network type, threshold, timeout). Proposals inherit scope defaults unless
+overridden individually.
 
-``` bash
-Scope (Group/Channel)
+```
+Scope (group / channel)
   ├── ScopeConfig (defaults for all proposals)
   └── Proposals
-       ├── Proposal 1 → Session 1 (inherits scope config)
-       ├── Proposal 2 → Session 2 (inherits scope config)
-       └── Proposal 3 → Session 3 (overrides scope config)
+       ├── Proposal 1 → Session (inherits scope config)
+       ├── Proposal 2 → Session (inherits scope config)
+       └── Proposal 3 → Session (overrides scope config)
 ```
 
-Scopes carry defaults (network type, thresholds, timeouts)
-so you don't have to pass config on every proposal. Use the builder to initialize or update a scope:
+### Network Types
+
+| Type | Rounds | Behavior |
+|------|--------|----------|
+| **Gossipsub** (default) | Fixed 2 rounds | Round 1 = proposal broadcast, Round 2 = all votes |
+| **P2P** | Dynamic `ceil(2n/3)` | Each vote advances the round by one |
+
+## API Reference
+
+### Creating a Service
+
+```rust
+use hashgraph_like_consensus::service::DefaultConsensusService;
+
+// Default: in-memory storage, 10 max sessions per scope
+let service = DefaultConsensusService::default();
+
+// Custom session limit
+let service = DefaultConsensusService::new_with_max_sessions(20);
+
+// Fully custom: plug in your own storage and event bus
+let service = ConsensusService::new_with_components(my_storage, my_event_bus, 10);
+```
+
+### Configuring a Scope
 
 ```rust
 use hashgraph_like_consensus::{
@@ -85,138 +118,108 @@ use hashgraph_like_consensus::{
     scope_config::NetworkType,
     service::DefaultConsensusService,
 };
+use std::time::Duration;
 
-async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let service = DefaultConsensusService::default();
 let scope = ScopeID::from("team_votes");
 
+// Initialize with the builder
 service
     .scope(&scope)
     .await?
     .with_network_type(NetworkType::P2P)
     .with_threshold(0.75)
-    .with_timeout(120)
+    .with_timeout(Duration::from_secs(120))
     .with_liveness_criteria(false)
     .initialize()
     .await?;
-Ok(())
-}
+
+// Update later (single field)
+service
+    .scope(&scope)
+    .await?
+    .with_threshold(0.8)
+    .update()
+    .await?;
 ```
 
-### Creating a Service
+Built-in presets are also available:
 
 ```rust
-// Simple: use defaults (in-memory storage, 10 max sessions per scope)
-let service = DefaultConsensusService::default();
+// High confidence (threshold = 0.9)
+service.scope(&scope).await?.strict_consensus().initialize().await?;
 
-// Custom: set your own session limit
-let service = DefaultConsensusService::new_with_max_sessions(20);
-
-// Advanced: plug in your own storage and event bus
-let service = ConsensusService::new_with_components(
-    my_storage,
-    my_event_bus,
-    10
-);
+// Low latency (threshold = 0.6, timeout = 30 s)
+service.scope(&scope).await?.fast_consensus().initialize().await?;
 ```
 
 ### Working with Proposals
 
-**Create a proposal** - Start a new voting session:
-
 ```rust
-let proposal = service.create_proposal(
-    &scope,
-    CreateProposalRequest::new(
+// Create a proposal
+let proposal = service
+    .create_proposal(&scope, CreateProposalRequest::new(
         "Upgrade contract".into(),
-        "Switch to v2".into(),
-        owner.address().as_slice().to_vec(),
-        3,    // expected voters
-        60,   // expiration in seconds
-        true, // tie-breaker: YES wins on equality
-    )?
-).await?;
-```
+        b"Switch to v2".to_vec(),
+        owner_address,
+        3,     // expected voters
+        60,    // expiration (seconds from now)
+        true,  // tie-breaker: YES wins on equality
+    )?)
+    .await?;
 
-**Process incoming proposals** - When you receive a proposal from the network:
-
-```rust
+// Process a proposal received from the network
 service.process_incoming_proposal(&scope, proposal).await?;
+
+// List active proposals
+let active: Option<Vec<Proposal>> = service.get_active_proposals(&scope).await?;
+
+// List finalized proposals (proposal_id -> result)
+let finalized: Option<HashMap<u32, bool>> = service.get_reached_proposals(&scope).await?;
 ```
 
-**List proposals** - See what's active or finalized:
+### Casting and Processing Votes
 
 ```rust
-let active = service.get_active_proposals(&scope).await;
-let finalized = service.get_reached_proposals(&scope).await;
-```
-
-### Casting Votes
-
-**Cast your vote** - Vote yes or no on a proposal:
-
-```rust
+// Cast your vote (yes = true, no = false)
 let vote = service.cast_vote(&scope, proposal_id, true, signer).await?;
-```
 
-**Vote and fetch proposal** - Useful for the creator who wants to gossip the updated proposal:
+// Cast a vote and get the updated proposal (useful for gossiping)
+let proposal = service
+    .cast_vote_and_get_proposal(&scope, proposal_id, true, signer)
+    .await?;
 
-```rust
-let proposal = service.cast_vote_and_get_proposal(&scope, proposal_id, true, signer).await?;
-```
-
-### Picking a config for your transport
-
-- Gossipsub (default): `ConsensusConfig::gossipsub()` enforces the RFC’s
-  two-round flow (round 1 = proposal, round 2 = everyone’s votes).
-- P2P: use `ConsensusConfig::p2p()` to derive the round cap dynamically (ceil(2n/3) of expected voters)
-  and advance one round per vote.
-
-Pass configs via `create_proposal_with_config` (or helper methods) when you need explicit control.
-Scope defaults are usually easier: set them once with
-`service.scope(&scope).await?.with_network_type(...)...initialize().await?`,
-then override per proposal only when needed.
-
-**Process incoming votes** - When you receive votes from other peers:
-
-```rust
+// Process a vote received from the network
 service.process_incoming_vote(&scope, vote).await?;
 ```
 
 ### Checking Results
 
-**Get consensus result** - See if a proposal has reached consensus:
-
 ```rust
-if let Some(result) = service.get_consensus_result(&scope, proposal_id).await {
-    println!("Consensus reached: {}", result);
-}
-```
+// Get the final consensus result (Ok(true) = YES, Ok(false) = NO)
+let result: bool = service.get_consensus_result(&scope, proposal_id).await?;
 
-**Check vote count** - See if enough votes have been collected:
-
-```rust
-let enough_votes = service
+// Check if enough votes have been collected
+let enough: bool = service
     .has_sufficient_votes_for_proposal(&scope, proposal_id)
     .await?;
 ```
 
-### Events
-
-**Subscribe to events** - Get notified when consensus is reached or fails:
+### Subscribing to Events
 
 ```rust
 use hashgraph_like_consensus::types::ConsensusEvent;
 
-let mut receiver = service.subscribe_to_events();
+let mut rx = service.subscribe_to_events();
+
 tokio::spawn(async move {
-    while let Ok((scope, event)) = receiver.recv().await {
+    while let Ok((scope, event)) = rx.recv().await {
         match event {
-            ConsensusEvent::ConsensusReached { proposal_id, result } => {
-                println!("Proposal {} reached consensus: {}", proposal_id, result);
+            ConsensusEvent::ConsensusReached { proposal_id, result, timestamp } => {
+                println!("Proposal {} → {}", proposal_id, if result { "YES" } else { "NO" });
             }
-            ConsensusEvent::ConsensusFailed { proposal_id, reason } => {
-                println!("Proposal {} failed: {}", proposal_id, reason);
+            ConsensusEvent::ConsensusFailed { proposal_id, timestamp } => {
+                println!("Proposal {} failed to reach consensus", proposal_id);
             }
         }
     }
@@ -225,28 +228,37 @@ tokio::spawn(async move {
 
 ### Statistics
 
-**Get scope statistics** - See how many proposals are active, finalized, etc:
-
 ```rust
 let stats = service.get_scope_stats(&scope).await;
-println!("Active: {}, Finalized: {}", stats.active_sessions, stats.consensus_reached);
+println!(
+    "Active: {}, Reached: {}, Failed: {}",
+    stats.active_sessions, stats.consensus_reached, stats.failed_sessions
+);
 ```
 
-### Advanced Usage
+## Advanced Usage
 
-**Custom storage** - Want to persist proposals to a database? Implement the `ConsensusStorage` trait:
+### Custom Storage
+
+Implement the `ConsensusStorage` trait to persist proposals to a database:
 
 ```rust
+use hashgraph_like_consensus::storage::ConsensusStorage;
+
 pub trait ConsensusStorage<Scope> {
     async fn save_session(&self, scope: &Scope, session: ConsensusSession) -> Result<()>;
     async fn get_session(&self, scope: &Scope, proposal_id: u32) -> Result<Option<ConsensusSession>>;
-    // ... more methods
+    // ... see storage.rs for the full trait
 }
 ```
 
-**Custom events** - Need different event handling? Implement `ConsensusEventBus`:
+### Custom Event Bus
+
+Implement `ConsensusEventBus` for alternative event delivery:
 
 ```rust
+use hashgraph_like_consensus::events::ConsensusEventBus;
+
 pub trait ConsensusEventBus<Scope> {
     type Receiver;
     fn subscribe(&self) -> Self::Receiver;
@@ -254,17 +266,33 @@ pub trait ConsensusEventBus<Scope> {
 }
 ```
 
-**Utility functions** - The `utils` module provides helpers for validation and ID generation:
+### Utility Functions
 
-- `validate_proposal()` - Check if a proposal and its votes are valid
-- `validate_vote()` - Verify a single vote's signature and structure
-- `validate_vote_chain()` - Ensure vote parent/received hash chains are correct
-- `has_sufficient_votes()` - Quick threshold check (count-based only)
-- `calculate_consensus_result(votes, expected_voters, consensus_threshold, liveness_criteria_yes)` -
-  Determine the result from collected votes (returns `Some(result)` when consensus is reached,
-  otherwise `None`), using the configured threshold and liveness rules
+The `utils` module provides low-level helpers:
 
-## Learn More
+| Function | Description |
+|----------|-------------|
+| `validate_proposal()` | Validate a proposal and its votes |
+| `validate_vote()` | Verify a vote's signature and structure |
+| `validate_vote_chain()` | Ensure parent/received hash chains are correct |
+| `has_sufficient_votes()` | Quick threshold check (count-based) |
+| `calculate_consensus_result()` | Determine result from collected votes using threshold and liveness rules |
 
-This library implements the [Hashgraph-like Consensus Protocol RFC](https://github.com/vacp2p/rfc-index/blob/main/vac/raw/consensus-hashgraphlike.md).
-For details on how the protocol works, security guarantees, and edge cases, check out the RFC.
+## Building
+
+```bash
+# Build
+cargo build
+
+# Run tests
+cargo test
+
+# Generate docs
+cargo doc --open
+```
+
+> **Note:** Requires a working `protoc` (Protocol Buffers compiler) since the library generates code from `.proto` files at build time.
+
+## License
+
+[MIT](https://opensource.org/licenses/MIT)

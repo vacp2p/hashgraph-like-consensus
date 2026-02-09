@@ -1,3 +1,9 @@
+//! Consensus session and configuration types.
+//!
+//! A [`ConsensusSession`] tracks the lifecycle of a single proposal — from creation
+//! through vote collection to a final [`ConsensusState`]. Each session carries its
+//! own [`ConsensusConfig`] that governs thresholds, timeouts, and round limits.
+
 use std::{collections::HashMap, time::Duration};
 
 use crate::{
@@ -11,6 +17,11 @@ use crate::{
     },
 };
 
+/// Per-session configuration controlling how consensus is reached.
+///
+/// Use [`ConsensusConfig::gossipsub()`] or [`ConsensusConfig::p2p()`] for sensible
+/// defaults, then refine with builder methods like [`with_timeout`](Self::with_timeout)
+/// and [`with_threshold`](Self::with_threshold).
 #[derive(Debug, Clone)]
 pub struct ConsensusConfig {
     /// What fraction of expected voters must vote before consensus can be reached (default: 2/3).
@@ -62,6 +73,7 @@ impl ConsensusConfig {
         ConsensusConfig::from(NetworkType::P2P)
     }
 
+    /// Default configuration for Gossipsub transport: fixed 2-round flow.
     pub fn gossipsub() -> Self {
         ConsensusConfig::from(NetworkType::Gossipsub)
     }
@@ -114,22 +126,27 @@ impl ConsensusConfig {
         }
     }
 
+    /// Maximum time to wait for consensus before timing out.
     pub fn consensus_timeout(&self) -> Duration {
         self.consensus_timeout
     }
 
+    /// Fraction of expected voters required before consensus can be determined.
     pub fn consensus_threshold(&self) -> f64 {
         self.consensus_threshold
     }
 
+    /// Whether silent peers are counted as YES (`true`) or NO (`false`).
     pub fn liveness_criteria(&self) -> bool {
         self.liveness_criteria
     }
 
+    /// Maximum number of voting rounds allowed.
     pub fn max_rounds(&self) -> u32 {
         self.max_rounds
     }
 
+    /// Whether Gossipsub-style fixed 2-round semantics are in effect.
     pub fn use_gossipsub_rounds(&self) -> bool {
         self.use_gossipsub_rounds
     }

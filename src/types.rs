@@ -1,3 +1,8 @@
+//! Core request and event types.
+//!
+//! [`CreateProposalRequest`] is the input for creating new proposals.
+//! [`ConsensusEvent`] represents outcomes emitted via the event bus.
+
 use std::time::Duration;
 
 use crate::{
@@ -6,6 +11,7 @@ use crate::{
     utils::{current_timestamp, generate_id, validate_expected_voters_count, validate_timeout},
 };
 
+/// Events emitted by the consensus service when a proposal reaches a terminal state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConsensusEvent {
     /// Consensus was reached! The proposal has a final result (yes or no).
@@ -18,6 +24,7 @@ pub enum ConsensusEvent {
     ConsensusFailed { proposal_id: u32, timestamp: u64 },
 }
 
+/// Internal transition result returned after adding a vote to a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionTransition {
     /// Session remains active with no outcome yet.
@@ -26,6 +33,11 @@ pub enum SessionTransition {
     ConsensusReached(bool),
 }
 
+/// Parameters for creating a new proposal.
+///
+/// All fields are validated on construction via [`CreateProposalRequest::new`].
+/// The `expiration_timestamp` is a relative duration in seconds that gets converted
+/// to an absolute timestamp when the proposal is created.
 #[derive(Debug, Clone)]
 pub struct CreateProposalRequest {
     /// A short name for the proposal (e.g., "Upgrade to v2").
