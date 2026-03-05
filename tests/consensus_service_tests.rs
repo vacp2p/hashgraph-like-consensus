@@ -1241,3 +1241,33 @@ async fn test_get_reached_proposals_nonexistent_scope() {
         "should return ScopeNotFound error"
     );
 }
+
+#[tokio::test]
+async fn test_unknown_scope_queries_stats_and_active_proposals() {
+    let service = DefaultConsensusService::default();
+    let unknown_scope = ScopeID::from("unknown_scope");
+
+    let stats = service.get_scope_stats(&unknown_scope).await;
+    assert_eq!(
+        stats.total_sessions, 0,
+        "unknown scope should have zero total sessions"
+    );
+    assert_eq!(
+        stats.active_sessions, 0,
+        "unknown scope should have zero active sessions"
+    );
+    assert_eq!(
+        stats.consensus_reached, 0,
+        "unknown scope should have zero reached consensus sessions"
+    );
+    assert_eq!(
+        stats.failed_sessions, 0,
+        "unknown scope should have zero failed sessions"
+    );
+
+    let active_result = service.get_active_proposals(&unknown_scope).await;
+    assert!(
+        matches!(active_result, Err(ConsensusError::ScopeNotFound)),
+        "get_active_proposals should return ScopeNotFound for unknown scope"
+    );
+}
