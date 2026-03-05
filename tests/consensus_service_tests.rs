@@ -31,6 +31,45 @@ fn proposal_owner_from_signer(signer: &PrivateKeySigner) -> Vec<u8> {
     signer.address().as_slice().to_vec()
 }
 
+async fn setup_proposal(
+    service: &DefaultConsensusService,
+    scope: &ScopeID,
+    proposal_owner: &PrivateKeySigner,
+    expected_voters_count: u32,
+    liveness_criteria_yes: bool,
+) -> hashgraph_like_consensus::protos::consensus::v1::Proposal {
+    service
+        .create_proposal_with_config(
+            scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD,
+                proposal_owner_from_signer(proposal_owner),
+                expected_voters_count,
+                PROPOSAL_EXPIRATION_TIME,
+                liveness_criteria_yes,
+            )
+            .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
+        )
+        .await
+        .expect("proposal should be created")
+}
+
+async fn cast_vote_or_panic(
+    service: &DefaultConsensusService,
+    scope: &ScopeID,
+    proposal_id: u32,
+    choice: bool,
+    signer: PrivateKeySigner,
+    msg: &str,
+) {
+    service
+        .cast_vote(scope, proposal_id, choice, signer)
+        .await
+        .expect(msg);
+}
+
 #[tokio::test]
 async fn test_basic_consensus_flow() {
     let service = DefaultConsensusService::default();
@@ -237,34 +276,36 @@ async fn test_handle_consensus_timeout_already_reached() {
     let proposal_owner = PrivateKeySigner::random();
 
     // Create proposal and reach consensus
-    let proposal = service
-        .create_proposal_with_config(
-            &scope,
-            CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD,
-                proposal_owner_from_signer(&proposal_owner),
-                EXPECTED_VOTERS_COUNT_2,
-                PROPOSAL_EXPIRATION_TIME,
-                true,
-            )
-            .expect("valid proposal request"),
-            Some(ConsensusConfig::gossipsub()),
-        )
-        .await
-        .expect("proposal should be created");
+    let proposal = setup_proposal(
+        &service,
+        &scope,
+        &proposal_owner,
+        EXPECTED_VOTERS_COUNT_2,
+        true,
+    )
+    .await;
 
     // Cast votes to reach consensus
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
-        .await
-        .expect("first vote");
+    cast_vote_or_panic(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        proposal_owner,
+        "first vote",
+    )
+    .await;
 
     let voter2 = PrivateKeySigner::random();
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, voter2)
-        .await
-        .expect("second vote");
+    cast_vote_or_panic(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        voter2,
+        "second vote",
+    )
+    .await;
 
     // Wait a bit to ensure consensus is reached
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -286,34 +327,36 @@ async fn test_handle_consensus_timeout_reaches_consensus() {
     let proposal_owner = PrivateKeySigner::random();
 
     // Create proposal with enough votes but not quite at threshold yet
-    let proposal = service
-        .create_proposal_with_config(
-            &scope,
-            CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD,
-                proposal_owner_from_signer(&proposal_owner),
-                EXPECTED_VOTERS_COUNT_3,
-                PROPOSAL_EXPIRATION_TIME,
-                true,
-            )
-            .expect("valid proposal request"),
-            Some(ConsensusConfig::gossipsub()),
-        )
-        .await
-        .expect("proposal should be created");
+    let proposal = setup_proposal(
+        &service,
+        &scope,
+        &proposal_owner,
+        EXPECTED_VOTERS_COUNT_3,
+        true,
+    )
+    .await;
 
     // Cast 2 YES votes (need 2 for threshold with 3 expected voters)
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
-        .await
-        .expect("first vote");
+    cast_vote_or_panic(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        proposal_owner,
+        "first vote",
+    )
+    .await;
 
     let voter2 = PrivateKeySigner::random();
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, voter2)
-        .await
-        .expect("second vote");
+    cast_vote_or_panic(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        voter2,
+        "second vote",
+    )
+    .await;
 
     // Call handle_consensus_timeout - should calculate consensus and reach it
     let result = service
@@ -356,37 +399,38 @@ async fn test_handle_consensus_timeout_reaches_no_consensus_with_multiple_votes(
     let no_voter_1 = PrivateKeySigner::random();
     let no_voter_2 = PrivateKeySigner::random();
 
-    let proposal = service
-        .create_proposal_with_config(
-            &scope,
-            CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD,
-                proposal_owner_from_signer(&yes_voter),
-                EXPECTED_VOTERS_COUNT_4,
-                PROPOSAL_EXPIRATION_TIME,
-                false,
-            )
-            .expect("valid proposal request"),
-            Some(ConsensusConfig::gossipsub()),
-        )
-        .await
-        .expect("proposal should be created");
+    let proposal =
+        setup_proposal(&service, &scope, &yes_voter, EXPECTED_VOTERS_COUNT_4, false).await;
 
-    service
-        .cast_vote(&scope, proposal.proposal_id, true, yes_voter)
-        .await
-        .expect("YES vote should succeed");
+    cast_vote_or_panic(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        true,
+        yes_voter,
+        "YES vote should succeed",
+    )
+    .await;
 
-    service
-        .cast_vote(&scope, proposal.proposal_id, false, no_voter_1)
-        .await
-        .expect("first NO vote should succeed");
+    cast_vote_or_panic(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        false,
+        no_voter_1,
+        "first NO vote should succeed",
+    )
+    .await;
 
-    service
-        .cast_vote(&scope, proposal.proposal_id, false, no_voter_2)
-        .await
-        .expect("second NO vote should succeed");
+    cast_vote_or_panic(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        false,
+        no_voter_2,
+        "second NO vote should succeed",
+    )
+    .await;
 
     let result = service
         .handle_consensus_timeout(&scope, proposal.proposal_id)
@@ -425,28 +469,25 @@ async fn test_handle_consensus_timeout_insufficient_votes() {
     let proposal_owner = PrivateKeySigner::random();
 
     // Create proposal with insufficient votes
-    let proposal = service
-        .create_proposal_with_config(
-            &scope,
-            CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD,
-                proposal_owner_from_signer(&proposal_owner),
-                EXPECTED_VOTERS_COUNT_4,
-                PROPOSAL_EXPIRATION_TIME,
-                true,
-            )
-            .expect("valid proposal request"),
-            Some(ConsensusConfig::gossipsub()),
-        )
-        .await
-        .expect("proposal should be created");
+    let proposal = setup_proposal(
+        &service,
+        &scope,
+        &proposal_owner,
+        EXPECTED_VOTERS_COUNT_4,
+        true,
+    )
+    .await;
 
     // Cast only 1 vote (need at least 3 for threshold with 4 expected voters)
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
-        .await
-        .expect("first vote");
+    cast_vote_or_panic(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        proposal_owner,
+        "first vote",
+    )
+    .await;
 
     // Call handle_consensus_timeout - should fail with insufficient votes
     let err = service
@@ -506,22 +547,14 @@ async fn test_handle_consensus_timeout_no_votes() {
     let proposal_owner = PrivateKeySigner::random();
 
     // Create proposal but don't cast any votes
-    let proposal = service
-        .create_proposal_with_config(
-            &scope,
-            CreateProposalRequest::new(
-                PROPOSAL_NAME.to_string(),
-                PROPOSAL_PAYLOAD,
-                proposal_owner_from_signer(&proposal_owner),
-                EXPECTED_VOTERS_COUNT_3,
-                PROPOSAL_EXPIRATION_TIME,
-                true,
-            )
-            .expect("valid proposal request"),
-            Some(ConsensusConfig::gossipsub()),
-        )
-        .await
-        .expect("proposal should be created");
+    let proposal = setup_proposal(
+        &service,
+        &scope,
+        &proposal_owner,
+        EXPECTED_VOTERS_COUNT_3,
+        true,
+    )
+    .await;
 
     // Call handle_consensus_timeout with no votes
     let err = service
