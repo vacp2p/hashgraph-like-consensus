@@ -347,6 +347,77 @@ async fn test_handle_consensus_timeout_reaches_consensus() {
 }
 
 #[tokio::test]
+async fn test_handle_consensus_timeout_reaches_no_consensus_with_multiple_votes() {
+    let service = DefaultConsensusService::default();
+    let mut events = service.subscribe_to_events();
+    let scope = ScopeID::from(SCOPE1_NAME);
+
+    let yes_voter = PrivateKeySigner::random();
+    let no_voter_1 = PrivateKeySigner::random();
+    let no_voter_2 = PrivateKeySigner::random();
+
+    let proposal = service
+        .create_proposal_with_config(
+            &scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD,
+                proposal_owner_from_signer(&yes_voter),
+                EXPECTED_VOTERS_COUNT_4,
+                PROPOSAL_EXPIRATION_TIME,
+                false,
+            )
+            .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
+        )
+        .await
+        .expect("proposal should be created");
+
+    service
+        .cast_vote(&scope, proposal.proposal_id, true, yes_voter)
+        .await
+        .expect("YES vote should succeed");
+
+    service
+        .cast_vote(&scope, proposal.proposal_id, false, no_voter_1)
+        .await
+        .expect("first NO vote should succeed");
+
+    service
+        .cast_vote(&scope, proposal.proposal_id, false, no_voter_2)
+        .await
+        .expect("second NO vote should succeed");
+
+    let result = service
+        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .await
+        .expect("should reach consensus at timeout");
+
+    assert!(!result, "should return false (NO consensus)");
+
+    let event_result = timeout(Duration::from_secs(1), async {
+        while let Ok((event_scope, event)) = events.recv().await {
+            if event_scope == scope
+                && let ConsensusEvent::ConsensusReached {
+                    proposal_id: event_proposal_id,
+                    result: event_result,
+                    timestamp: _event_timestamp,
+                } = event
+                && event_proposal_id == proposal.proposal_id
+            {
+                return Some(event_result);
+            }
+        }
+        None
+    })
+    .await
+    .expect("event timeout")
+    .expect("consensus event should be emitted");
+
+    assert!(!event_result, "event should indicate NO consensus");
+}
+
+#[tokio::test]
 async fn test_handle_consensus_timeout_insufficient_votes() {
     let service = DefaultConsensusService::default();
     let mut events = service.subscribe_to_events();
