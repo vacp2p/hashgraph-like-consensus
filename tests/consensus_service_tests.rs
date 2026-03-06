@@ -37,6 +37,7 @@ async fn setup_proposal(
     proposal_owner: &PrivateKeySigner,
     expected_voters_count: u32,
     liveness_criteria_yes: bool,
+    consensus_config: ConsensusConfig,
 ) -> hashgraph_like_consensus::protos::consensus::v1::Proposal {
     service
         .create_proposal_with_config(
@@ -50,7 +51,7 @@ async fn setup_proposal(
                 liveness_criteria_yes,
             )
             .expect("valid proposal request"),
-            Some(ConsensusConfig::gossipsub()),
+            Some(consensus_config),
         )
         .await
         .expect("proposal should be created")
@@ -282,6 +283,7 @@ async fn test_handle_consensus_timeout_already_reached() {
         &proposal_owner,
         EXPECTED_VOTERS_COUNT_2,
         true,
+        ConsensusConfig::gossipsub(),
     )
     .await;
 
@@ -333,6 +335,7 @@ async fn test_handle_consensus_timeout_reaches_consensus() {
         &proposal_owner,
         EXPECTED_VOTERS_COUNT_3,
         true,
+        ConsensusConfig::gossipsub(),
     )
     .await;
 
@@ -399,8 +402,15 @@ async fn test_handle_consensus_timeout_reaches_no_consensus_with_multiple_votes(
     let no_voter_1 = PrivateKeySigner::random();
     let no_voter_2 = PrivateKeySigner::random();
 
-    let proposal =
-        setup_proposal(&service, &scope, &yes_voter, EXPECTED_VOTERS_COUNT_4, false).await;
+    let proposal = setup_proposal(
+        &service,
+        &scope,
+        &yes_voter,
+        EXPECTED_VOTERS_COUNT_4,
+        false,
+        ConsensusConfig::gossipsub(),
+    )
+    .await;
 
     cast_vote_or_panic(
         &service,
@@ -475,6 +485,7 @@ async fn test_handle_consensus_timeout_insufficient_votes() {
         &proposal_owner,
         EXPECTED_VOTERS_COUNT_4,
         true,
+        ConsensusConfig::gossipsub(),
     )
     .await;
 
@@ -553,6 +564,7 @@ async fn test_handle_consensus_timeout_no_votes() {
         &proposal_owner,
         EXPECTED_VOTERS_COUNT_3,
         true,
+        ConsensusConfig::gossipsub(),
     )
     .await;
 
@@ -604,6 +616,130 @@ async fn test_handle_consensus_timeout_no_votes() {
         active_proposals.is_none(),
         "proposal should not be in active proposals"
     );
+}
+
+#[tokio::test]
+async fn test_handle_consensus_timeout_reaches_consensus_p2p() {
+    let service = DefaultConsensusService::default();
+    let mut events = service.subscribe_to_events();
+    let scope = ScopeID::from("scope_p2p_reaches_consensus");
+    let proposal_owner = PrivateKeySigner::random();
+
+    let proposal = setup_proposal(
+        &service,
+        &scope,
+        &proposal_owner,
+        EXPECTED_VOTERS_COUNT_3,
+        true,
+        ConsensusConfig::p2p(),
+    )
+    .await;
+
+    cast_vote_or_panic(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        proposal_owner,
+        "first vote",
+    )
+    .await;
+
+    let voter2 = PrivateKeySigner::random();
+    cast_vote_or_panic(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        voter2,
+        "second vote",
+    )
+    .await;
+
+    let result = service
+        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .await
+        .expect("should reach consensus");
+
+    assert!(result, "should return true (YES consensus)");
+
+    let event_received = timeout(Duration::from_secs(1), async {
+        while let Ok((event_scope, event)) = events.recv().await {
+            if event_scope == scope
+                && let ConsensusEvent::ConsensusReached {
+                    proposal_id: event_proposal_id,
+                    result: event_result,
+                    timestamp: _event_timestamp,
+                } = event
+                && event_proposal_id == proposal.proposal_id
+            {
+                return Some(event_result);
+            }
+        }
+        None
+    })
+    .await
+    .expect("event timeout")
+    .expect("consensus event should be emitted");
+
+    assert!(event_received, "event should indicate YES consensus");
+}
+
+#[tokio::test]
+async fn test_handle_consensus_timeout_insufficient_votes_p2p() {
+    let service = DefaultConsensusService::default();
+    let mut events = service.subscribe_to_events();
+    let scope = ScopeID::from("scope_p2p_insufficient_votes");
+    let proposal_owner = PrivateKeySigner::random();
+
+    let proposal = setup_proposal(
+        &service,
+        &scope,
+        &proposal_owner,
+        EXPECTED_VOTERS_COUNT_4,
+        true,
+        ConsensusConfig::p2p(),
+    )
+    .await;
+
+    cast_vote_or_panic(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        proposal_owner,
+        "first vote",
+    )
+    .await;
+
+    let err = service
+        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .await
+        .expect_err("should fail with insufficient votes");
+
+    assert!(
+        matches!(err, ConsensusError::InsufficientVotesAtTimeout),
+        "should return InsufficientVotesAtTimeout error"
+    );
+
+    let event_received = timeout(Duration::from_secs(1), async {
+        while let Ok((event_scope, event)) = events.recv().await {
+            if event_scope == scope
+                && let ConsensusEvent::ConsensusFailed {
+                    proposal_id: event_proposal_id,
+                    timestamp: _event_timestamp,
+                } = event
+                && event_proposal_id == proposal.proposal_id
+            {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .expect("event timeout");
+
+    assert!(event_received, "ConsensusFailed event should be emitted");
 }
 
 #[tokio::test]
