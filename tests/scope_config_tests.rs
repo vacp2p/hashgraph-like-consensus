@@ -286,3 +286,92 @@ async fn create_proposal_with_config_preserves_override_timeout() {
 
     assert_eq!(resolved.consensus_timeout(), Duration::from_secs(120));
 }
+
+#[tokio::test]
+async fn test_scope_config_convenience_profiles_and_network_defaults() {
+    let service = DefaultConsensusService::default();
+    let scope = ScopeID::from("convenience_profiles_scope");
+
+    // Ensure strict profile is applied and persists through initialize.
+    service
+        .scope(&scope)
+        .await
+        .unwrap()
+        .strict_consensus()
+        .initialize()
+        .await
+        .unwrap();
+
+    let strict = service.scope(&scope).await.unwrap().get_config();
+    assert_eq!(strict.default_consensus_threshold, 0.9);
+
+    // Ensure fast profile updates threshold+timeout.
+    service
+        .scope(&scope)
+        .await
+        .unwrap()
+        .fast_consensus()
+        .update()
+        .await
+        .unwrap();
+
+    let fast = service.scope(&scope).await.unwrap().get_config();
+    assert_eq!(fast.default_consensus_threshold, 0.6);
+    assert_eq!(fast.default_timeout, Duration::from_secs(30));
+
+    // Exercise both branches of with_network_defaults.
+    service
+        .scope(&scope)
+        .await
+        .unwrap()
+        .with_network_defaults(NetworkType::P2P)
+        .update()
+        .await
+        .unwrap();
+
+    let p2p = service.scope(&scope).await.unwrap().get_config();
+    assert_eq!(p2p.network_type, NetworkType::P2P);
+
+    service
+        .scope(&scope)
+        .await
+        .unwrap()
+        .with_network_defaults(NetworkType::Gossipsub)
+        .update()
+        .await
+        .unwrap();
+
+    let gossipsub = service.scope(&scope).await.unwrap().get_config();
+    assert_eq!(gossipsub.network_type, NetworkType::Gossipsub);
+}
+
+#[test]
+fn test_scope_config_builder_with_config_and_from_existing() {
+    use hashgraph_like_consensus::scope_config::ScopeConfig;
+
+    let existing = ScopeConfig::from(NetworkType::P2P);
+    let replacement = ScopeConfig {
+        network_type: NetworkType::Gossipsub,
+        default_consensus_threshold: 0.8,
+        default_timeout: Duration::from_secs(90),
+        default_liveness_criteria_yes: false,
+        max_rounds_override: Some(7),
+    };
+
+    let built = hashgraph_like_consensus::scope_config::ScopeConfigBuilder::from_existing(existing)
+        .with_config(replacement.clone())
+        .build()
+        .expect("replacement config should be valid");
+
+    assert_eq!(built.network_type, replacement.network_type);
+    assert_eq!(
+        built.default_consensus_threshold,
+        replacement.default_consensus_threshold
+    );
+    assert_eq!(built.default_timeout, replacement.default_timeout);
+    assert_eq!(
+        built.default_liveness_criteria_yes,
+        replacement.default_liveness_criteria_yes
+    );
+    assert_eq!(built.max_rounds_override, replacement.max_rounds_override);
+}
