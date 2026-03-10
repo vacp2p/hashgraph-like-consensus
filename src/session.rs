@@ -600,4 +600,65 @@ mod tests {
         let mut zero_votes = ConsensusSession::new(proposal, ConsensusConfig::gossipsub());
         zero_votes.check_round_limit(0).unwrap();
     }
+
+    #[test]
+    fn p2p_round_limit_should_reject_effectively_huge_vote_count() {
+        if usize::BITS <= 32 {
+            return;
+        }
+
+        let signer = PrivateKeySigner::random();
+        let request = CreateProposalRequest::new(
+            "TruncationTest".into(),
+            vec![],
+            signer.address().as_slice().to_vec(),
+            1,
+            60,
+            true,
+        )
+        .unwrap();
+
+        let proposal = request.into_proposal().unwrap();
+        let mut session = ConsensusSession::new(proposal, ConsensusConfig::p2p());
+
+        let wrapped_vote_count = (u32::MAX as usize) + 1;
+
+        // Desired behavior: an effectively huge batch must be rejected by round-limit checks.
+        let result = session.check_round_limit(wrapped_vote_count);
+        assert!(
+            result.is_err(),
+            "effectively huge vote_count should not pass round-limit checks"
+        );
+    }
+
+    #[test]
+    fn p2p_update_round_should_advance_for_effectively_huge_vote_count() {
+        if usize::BITS <= 32 {
+            return;
+        }
+
+        let signer = PrivateKeySigner::random();
+        let request = CreateProposalRequest::new(
+            "RoundUpdateTruncation".into(),
+            vec![],
+            signer.address().as_slice().to_vec(),
+            5,
+            60,
+            true,
+        )
+        .unwrap();
+
+        let proposal = request.into_proposal().unwrap();
+        let mut session = ConsensusSession::new(proposal, ConsensusConfig::p2p());
+        let starting_round = session.proposal.round;
+
+        let wrapped_vote_count = (u32::MAX as usize) + 1;
+        session.update_round(wrapped_vote_count);
+
+        // Desired behavior: adding a huge number of votes must advance round.
+        assert!(
+            session.proposal.round > starting_round,
+            "round should advance when a huge vote_count is applied"
+        );
+    }
 }

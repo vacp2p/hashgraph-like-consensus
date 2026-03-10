@@ -377,3 +377,30 @@ pub fn has_sufficient_votes(
     let required_votes = calculate_required_votes(expected_voters, consensus_threshold);
     total_votes >= required_votes
 }
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    #[test]
+    fn id_generation_should_not_collapse_distinct_128bit_values() {
+        let low = 0xDEADBEEFu32;
+        let high_a = 0x00000001u128;
+        let high_b = 0xABCDEF01u128;
+
+        let value_a = (high_a << 32) | (low as u128);
+        let value_b = (high_b << 32) | (low as u128);
+
+        let uuid_a = Uuid::from_u128(value_a);
+        let uuid_b = Uuid::from_u128(value_b);
+
+        let id_a = uuid_a.as_u128() as u32;
+        let id_b = uuid_b.as_u128() as u32;
+
+        // Desired behavior: distinct 128-bit values should remain distinct after conversion.
+        assert_ne!(
+            id_a, id_b,
+            "distinct 128-bit values should not collapse to the same 32-bit id"
+        );
+    }
+}
