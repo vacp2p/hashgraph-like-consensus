@@ -20,10 +20,18 @@ use crate::{
 
 const SIGNATURE_LENGTH: usize = 65;
 
+/// Fold a 128-bit value into 32 bits via XOR so every bit contributes.
+fn fold_u128_to_u32(n: u128) -> u32 {
+    ((n >> 96) as u32) ^ ((n >> 64) as u32) ^ ((n >> 32) as u32) ^ (n as u32)
+}
+
 /// Generate a unique 32-bit ID from a UUID.
+///
+/// Uses XOR folding so all 128 bits of the UUID contribute to the result,
+/// avoiding collisions from simple truncation.
 pub fn generate_id() -> u32 {
     let uuid = Uuid::new_v4();
-    uuid.as_u128() as u32
+    fold_u128_to_u32(uuid.as_u128())
 }
 
 /// Compute the hash of a vote for signing and validation.
@@ -382,6 +390,8 @@ pub fn has_sufficient_votes(
 mod tests {
     use uuid::Uuid;
 
+    use super::fold_u128_to_u32;
+
     #[test]
     fn id_generation_should_not_collapse_distinct_128bit_values() {
         let low = 0xDEADBEEFu32;
@@ -394,8 +404,8 @@ mod tests {
         let uuid_a = Uuid::from_u128(value_a);
         let uuid_b = Uuid::from_u128(value_b);
 
-        let id_a = uuid_a.as_u128() as u32;
-        let id_b = uuid_b.as_u128() as u32;
+        let id_a = fold_u128_to_u32(uuid_a.as_u128());
+        let id_b = fold_u128_to_u32(uuid_b.as_u128());
 
         // Desired behavior: distinct 128-bit values should remain distinct after conversion.
         assert_ne!(

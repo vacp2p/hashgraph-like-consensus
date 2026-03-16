@@ -17,7 +17,7 @@ Perfect for group governance, voting systems, or any scenario where you need dis
 - **Event-driven** - Subscribe to consensus outcomes via a broadcast event bus
 - **Cryptographic integrity** - Votes are signed with secp256k1 and chained in a hashgraph structure
 
-Based on the [Hashgraph-like Consensus Protocol RFC](https://github.com/vacp2p/rfc-index/blob/main/vac/raw/consensus-hashgraphlike.md).
+Based on the [Hashgraph-like Consensus Protocol RFC](https://lip.logos.co/ift-ts/raw/consensus-hashgraphlike.html).
 
 ## Installation
 
@@ -88,10 +88,10 @@ Scope (group / channel)
 
 ### Network Types
 
-| Type | Rounds | Behavior |
-|------|--------|----------|
-| **Gossipsub** (default) | Fixed 2 rounds | Round 1 = proposal broadcast, Round 2 = all votes |
-| **P2P** | Dynamic `ceil(2n/3)` | Each vote advances the round by one |
+| Type                    | Rounds               | Behavior                                          |
+| ----------------------- | -------------------- | ------------------------------------------------- |
+| **Gossipsub** (default) | Fixed 2 rounds       | Round 1 = proposal broadcast, Round 2 = all votes |
+| **P2P**                 | Dynamic `ceil(2n/3)` | Each vote advances the round by one               |
 
 ## API Reference
 
@@ -270,12 +270,12 @@ pub trait ConsensusEventBus<Scope> {
 
 The `utils` module provides low-level helpers:
 
-| Function | Description |
-|----------|-------------|
-| `validate_proposal()` | Validate a proposal and its votes |
-| `validate_vote()` | Verify a vote's signature and structure |
-| `validate_vote_chain()` | Ensure parent/received hash chains are correct |
-| `has_sufficient_votes()` | Quick threshold check (count-based) |
+| Function                       | Description                                                              |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| `validate_proposal()`          | Validate a proposal and its votes                                        |
+| `validate_vote()`              | Verify a vote's signature and structure                                  |
+| `validate_vote_chain()`        | Ensure parent/received hash chains are correct                           |
+| `has_sufficient_votes()`       | Quick threshold check (count-based)                                      |
 | `calculate_consensus_result()` | Determine result from collected votes using threshold and liveness rules |
 
 ## Building

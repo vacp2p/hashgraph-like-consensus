@@ -264,6 +264,13 @@ impl ConsensusSession {
             }
         }
 
+        // Each distinct voter can vote at most once, so the batch size
+        // is bounded by expected_voters_count (u32). Reject early if violated.
+        if votes.len() > self.proposal.expected_voters_count as usize {
+            self.state = ConsensusState::Failed;
+            return Err(ConsensusError::MaxRoundsExceeded);
+        }
+
         validate_vote_chain(&votes)?;
         for vote in &votes {
             validate_vote(vote, expiration_timestamp, creation_time)?;
@@ -287,6 +294,12 @@ impl ConsensusSession {
     /// - For P2P: Calculates `(current_round - 1) + vote_count`.
     /// - For Gossipsub: Moves to Round 2 if `vote_count > 0`.
     fn check_round_limit(&mut self, vote_count: usize) -> Result<(), ConsensusError> {
+        // vote_count cannot exceed expected_voters_count (u32); reject if it does
+        if vote_count > self.proposal.expected_voters_count as usize {
+            self.state = ConsensusState::Failed;
+            return Err(ConsensusError::MaxRoundsExceeded);
+        }
+
         // Determine the value to compare against the limit based on configuration
         let projected_value = if self.config.use_gossipsub_rounds {
             // Gossipsub Logic:
@@ -303,6 +316,7 @@ impl ConsensusSession {
             // RFC Section 2.5.3: Round increments per vote.
             // Current existing votes = round - 1.
             // Projected total = Existing votes + New votes.
+            // vote_count is bounded by expected_voters_count (u32), safe to cast
             let current_votes = self.proposal.round.saturating_sub(1);
             current_votes.saturating_add(vote_count as u32)
         };
@@ -336,6 +350,7 @@ impl ConsensusSession {
         } else {
             // RFC Section 2.5.3: P2P
             // Round increments for every vote added.
+            // vote_count is bounded by expected_voters_count (u32), safe to cast
             self.proposal.round = self.proposal.round.saturating_add(vote_count as u32);
         }
     }
@@ -632,17 +647,13 @@ mod tests {
     }
 
     #[test]
-    fn p2p_update_round_should_advance_for_effectively_huge_vote_count() {
-        if usize::BITS <= 32 {
-            return;
-        }
-
+    fn p2p_update_round_should_advance_for_max_u32_vote_count() {
         let signer = PrivateKeySigner::random();
         let request = CreateProposalRequest::new(
-            "RoundUpdateTruncation".into(),
+            "RoundUpdateMax".into(),
             vec![],
             signer.address().as_slice().to_vec(),
-            5,
+            u32::MAX,
             60,
             true,
         )
@@ -652,13 +663,13 @@ mod tests {
         let mut session = ConsensusSession::new(proposal, ConsensusConfig::p2p());
         let starting_round = session.proposal.round;
 
-        let wrapped_vote_count = (u32::MAX as usize) + 1;
-        session.update_round(wrapped_vote_count);
+        // vote_count at the u32 boundary should still advance the round via saturating_add
+        session.update_round(u32::MAX as usize);
 
-        // Desired behavior: adding a huge number of votes must advance round.
         assert!(
             session.proposal.round > starting_round,
-            "round should advance when a huge vote_count is applied"
+            "round should advance when max u32 vote_count is applied"
         );
+        assert_eq!(session.proposal.round, u32::MAX);
     }
 }

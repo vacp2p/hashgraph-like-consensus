@@ -94,7 +94,7 @@ impl CreateProposalRequest {
             expected_voters_count: self.expected_voters_count,
             round: 1,
             timestamp: now,
-            expiration_timestamp: now + self.expiration_timestamp,
+            expiration_timestamp: now.saturating_add(self.expiration_timestamp),
             liveness_criteria_yes: self.liveness_criteria_yes,
         })
     }
