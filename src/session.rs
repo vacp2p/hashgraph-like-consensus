@@ -264,6 +264,13 @@ impl ConsensusSession {
             }
         }
 
+        // Each distinct voter can vote at most once, so the batch size
+        // is bounded by expected_voters_count (u32). Reject early if violated.
+        if votes.len() > self.proposal.expected_voters_count as usize {
+            self.state = ConsensusState::Failed;
+            return Err(ConsensusError::MaxRoundsExceeded);
+        }
+
         validate_vote_chain(&votes)?;
         for vote in &votes {
             validate_vote(vote, expiration_timestamp, creation_time)?;
@@ -287,6 +294,12 @@ impl ConsensusSession {
     /// - For P2P: Calculates `(current_round - 1) + vote_count`.
     /// - For Gossipsub: Moves to Round 2 if `vote_count > 0`.
     fn check_round_limit(&mut self, vote_count: usize) -> Result<(), ConsensusError> {
+        // vote_count cannot exceed expected_voters_count (u32); reject if it does
+        if vote_count > self.proposal.expected_voters_count as usize {
+            self.state = ConsensusState::Failed;
+            return Err(ConsensusError::MaxRoundsExceeded);
+        }
+
         // Determine the value to compare against the limit based on configuration
         let projected_value = if self.config.use_gossipsub_rounds {
             // Gossipsub Logic:
@@ -303,6 +316,7 @@ impl ConsensusSession {
             // RFC Section 2.5.3: Round increments per vote.
             // Current existing votes = round - 1.
             // Projected total = Existing votes + New votes.
+            // vote_count is bounded by expected_voters_count (u32), safe to cast
             let current_votes = self.proposal.round.saturating_sub(1);
             current_votes.saturating_add(vote_count as u32)
         };
@@ -336,6 +350,7 @@ impl ConsensusSession {
         } else {
             // RFC Section 2.5.3: P2P
             // Round increments for every vote added.
+            // vote_count is bounded by expected_voters_count (u32), safe to cast
             self.proposal.round = self.proposal.round.saturating_add(vote_count as u32);
         }
     }
@@ -381,11 +396,13 @@ impl ConsensusSession {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use alloy::signers::local::PrivateKeySigner;
 
     use crate::{
         error::ConsensusError,
-        session::{ConsensusConfig, ConsensusSession},
+        session::{ConsensusConfig, ConsensusSession, ConsensusState},
         types::CreateProposalRequest,
         utils::build_vote,
     };
@@ -488,5 +505,171 @@ mod tests {
         let vote5 = build_vote(&session.proposal, true, signer5).await.unwrap();
         let err = session.add_vote(vote5).unwrap_err();
         assert!(matches!(err, ConsensusError::MaxRoundsExceeded));
+    }
+
+    #[test]
+    fn consensus_config_builder_and_getters_cover_edges() {
+        let cfg = ConsensusConfig::gossipsub()
+            .with_threshold(0.75)
+            .unwrap()
+            .with_timeout(Duration::from_secs(42))
+            .unwrap()
+            .with_liveness_criteria(false);
+
+        assert_eq!(cfg.consensus_threshold(), 0.75);
+        assert_eq!(cfg.consensus_timeout(), Duration::from_secs(42));
+        assert!(!cfg.liveness_criteria());
+
+        let err = ConsensusConfig::gossipsub()
+            .with_threshold(1.1)
+            .unwrap_err();
+        assert!(matches!(err, ConsensusError::InvalidConsensusThreshold));
+
+        let err = ConsensusConfig::gossipsub()
+            .with_timeout(Duration::from_secs(0))
+            .unwrap_err();
+        assert!(matches!(err, ConsensusError::InvalidTimeout));
+
+        // Covers max_round_limit branch when P2P-like mode uses explicit max_rounds (non-zero).
+        let explicit = ConsensusConfig::new(2.0 / 3.0, Duration::from_secs(60), 7, false, true);
+        assert_eq!(explicit.max_round_limit(100), 7);
+    }
+
+    #[tokio::test]
+    async fn add_vote_rejects_non_active_and_reports_reached_when_finalized() {
+        let signer = PrivateKeySigner::random();
+        let request = CreateProposalRequest::new(
+            "Test".into(),
+            "".into(),
+            signer.address().as_slice().to_vec(),
+            3,
+            60,
+            true,
+        )
+        .unwrap();
+        let proposal = request.into_proposal().unwrap();
+
+        // Failed sessions reject new votes.
+        let mut failed_session =
+            ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub());
+        failed_session.state = ConsensusState::Failed;
+        let vote = build_vote(&failed_session.proposal, true, signer.clone())
+            .await
+            .unwrap();
+        let err = failed_session.add_vote(vote).unwrap_err();
+        assert!(matches!(err, ConsensusError::SessionNotActive));
+
+        // Finalized sessions return existing transition/result.
+        let mut finalized_session = ConsensusSession::new(proposal, ConsensusConfig::gossipsub());
+        finalized_session.state = ConsensusState::ConsensusReached(true);
+        let vote = build_vote(&finalized_session.proposal, true, signer)
+            .await
+            .unwrap();
+        let transition = finalized_session.add_vote(vote).unwrap();
+        assert!(matches!(
+            transition,
+            crate::types::SessionTransition::ConsensusReached(true)
+        ));
+    }
+
+    #[tokio::test]
+    async fn initialize_with_votes_non_active_duplicate_and_zero_votes_paths() {
+        let signer = PrivateKeySigner::random();
+        let request = CreateProposalRequest::new(
+            "Test".into(),
+            "".into(),
+            signer.address().as_slice().to_vec(),
+            4,
+            60,
+            true,
+        )
+        .unwrap();
+        let proposal = request.into_proposal().unwrap();
+
+        // Non-active sessions reject initialization.
+        let mut inactive = ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub());
+        inactive.state = ConsensusState::Failed;
+        let err = inactive
+            .initialize_with_votes(vec![], proposal.expiration_timestamp, proposal.timestamp)
+            .unwrap_err();
+        assert!(matches!(err, ConsensusError::SessionNotActive));
+
+        // Duplicate owners are rejected before chain/signature checks.
+        let mut dup_session = ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub());
+        let vote1 = build_vote(&dup_session.proposal, true, signer.clone())
+            .await
+            .unwrap();
+        let vote2 = build_vote(&dup_session.proposal, false, signer)
+            .await
+            .unwrap();
+        let err = dup_session
+            .initialize_with_votes(
+                vec![vote1, vote2],
+                proposal.expiration_timestamp,
+                proposal.timestamp,
+            )
+            .unwrap_err();
+        assert!(matches!(err, ConsensusError::DuplicateVote));
+
+        // Explicitly exercise gossipsub projected round branch where vote_count == 0.
+        let mut zero_votes = ConsensusSession::new(proposal, ConsensusConfig::gossipsub());
+        zero_votes.check_round_limit(0).unwrap();
+    }
+
+    #[test]
+    fn p2p_round_limit_should_reject_effectively_huge_vote_count() {
+        if usize::BITS <= 32 {
+            return;
+        }
+
+        let signer = PrivateKeySigner::random();
+        let request = CreateProposalRequest::new(
+            "TruncationTest".into(),
+            vec![],
+            signer.address().as_slice().to_vec(),
+            1,
+            60,
+            true,
+        )
+        .unwrap();
+
+        let proposal = request.into_proposal().unwrap();
+        let mut session = ConsensusSession::new(proposal, ConsensusConfig::p2p());
+
+        let wrapped_vote_count = (u32::MAX as usize) + 1;
+
+        // Desired behavior: an effectively huge batch must be rejected by round-limit checks.
+        let result = session.check_round_limit(wrapped_vote_count);
+        assert!(
+            result.is_err(),
+            "effectively huge vote_count should not pass round-limit checks"
+        );
+    }
+
+    #[test]
+    fn p2p_update_round_should_advance_for_max_u32_vote_count() {
+        let signer = PrivateKeySigner::random();
+        let request = CreateProposalRequest::new(
+            "RoundUpdateMax".into(),
+            vec![],
+            signer.address().as_slice().to_vec(),
+            u32::MAX,
+            60,
+            true,
+        )
+        .unwrap();
+
+        let proposal = request.into_proposal().unwrap();
+        let mut session = ConsensusSession::new(proposal, ConsensusConfig::p2p());
+        let starting_round = session.proposal.round;
+
+        // vote_count at the u32 boundary should still advance the round via saturating_add
+        session.update_round(u32::MAX as usize);
+
+        assert!(
+            session.proposal.round > starting_round,
+            "round should advance when max u32 vote_count is applied"
+        );
+        assert_eq!(session.proposal.round, u32::MAX);
     }
 }

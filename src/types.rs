@@ -94,8 +94,37 @@ impl CreateProposalRequest {
             expected_voters_count: self.expected_voters_count,
             round: 1,
             timestamp: now,
-            expiration_timestamp: now + self.expiration_timestamp,
+            expiration_timestamp: now.saturating_add(self.expiration_timestamp),
             liveness_criteria_yes: self.liveness_criteria_yes,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CreateProposalRequest;
+
+    #[test]
+    fn into_proposal_should_not_overflow_expiration_timestamp() {
+        let request = CreateProposalRequest::new(
+            "overflow-check".to_string(),
+            vec![],
+            vec![1u8; 20],
+            1,
+            u64::MAX,
+            true,
+        )
+        .expect("request should be valid");
+
+        // Desired behavior: proposal creation should not panic on overflow-prone input,
+        // and expiration should never be earlier than creation timestamp.
+        let proposal = request
+            .into_proposal()
+            .expect("proposal creation should handle large expiration safely");
+
+        assert!(
+            proposal.expiration_timestamp >= proposal.timestamp,
+            "expiration must not overflow below creation timestamp"
+        );
     }
 }

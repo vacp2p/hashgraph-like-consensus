@@ -2,6 +2,7 @@ use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
 use prost::Message;
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::timeout;
 
 use hashgraph_like_consensus::{
@@ -1187,6 +1188,85 @@ async fn test_handle_consensus_timeout_rejects_unknown_scope() {
     assert!(
         matches!(err, ConsensusError::SessionNotFound),
         "should return SessionNotFound for unknown scope"
+    );
+}
+
+#[tokio::test]
+async fn test_cast_vote_still_active_does_not_emit_consensus_event() {
+    let service = DefaultConsensusService::default();
+    let mut events = service.subscribe_to_events();
+    let scope = ScopeID::from("still_active_no_event_scope");
+    let proposal_owner = PrivateKeySigner::random();
+
+    let proposal = setup_proposal(
+        &service,
+        &scope,
+        &proposal_owner,
+        EXPECTED_VOTERS_COUNT_4,
+        true,
+        ConsensusConfig::gossipsub(),
+    )
+    .await;
+
+    // One vote is insufficient for n=4; transition should remain StillActive.
+    service
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .await
+        .expect("vote should succeed");
+
+    let no_event = timeout(Duration::from_millis(150), events.recv()).await;
+    assert!(
+        no_event.is_err(),
+        "no terminal consensus event should be emitted while session is still active"
+    );
+}
+
+#[tokio::test]
+async fn test_process_incoming_proposal_resolve_config_uses_base_timeout_when_expiration_not_after_timestamp()
+ {
+    let service = DefaultConsensusService::default();
+    let scope = ScopeID::from("resolve_config_base_timeout_scope");
+
+    let request = CreateProposalRequest::new(
+        PROPOSAL_NAME.to_string(),
+        PROPOSAL_PAYLOAD,
+        vec![1u8; 20],
+        EXPECTED_VOTERS_COUNT_3,
+        PROPOSAL_EXPIRATION_TIME,
+        false, // ensure liveness comes from proposal fields
+    )
+    .expect("valid proposal request");
+
+    let mut incoming = request.into_proposal().expect("proposal");
+
+    // Force expiration_timestamp <= timestamp while keeping both in the future,
+    // so proposal remains non-expired but resolve_config must fall back to base timeout.
+    let future = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_secs()
+        + 120;
+    incoming.timestamp = future;
+    incoming.expiration_timestamp = future;
+
+    service
+        .process_incoming_proposal(&scope, incoming.clone())
+        .await
+        .expect("incoming proposal should be accepted");
+
+    let resolved = service
+        .get_proposal_config(&scope, incoming.proposal_id)
+        .await
+        .expect("resolved config");
+
+    assert_eq!(
+        resolved.consensus_timeout(),
+        ConsensusConfig::gossipsub().consensus_timeout(),
+        "timeout should use base config when expiration_timestamp <= timestamp"
+    );
+    assert!(
+        !resolved.liveness_criteria(),
+        "liveness criteria should still be sourced from proposal fields"
     );
 }
 
