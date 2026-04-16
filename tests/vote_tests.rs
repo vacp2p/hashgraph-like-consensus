@@ -1,7 +1,6 @@
 use alloy::signers::local::PrivateKeySigner;
 
 use hashgraph_like_consensus::{
-    api::ConsensusServiceAPI,
     scope::ScopeID,
     service::DefaultConsensusService,
     session::ConsensusConfig,

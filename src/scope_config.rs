@@ -90,7 +90,7 @@ impl From<NetworkType> for ScopeConfig {
     }
 }
 
-pub struct ScopeConfigBuilder {
+pub(crate) struct ScopeConfigBuilder {
     config: ScopeConfig,
 }
 
@@ -128,12 +128,6 @@ impl ScopeConfigBuilder {
     /// Override max rounds (if None, uses network_type defaults)
     pub fn with_max_rounds(mut self, max_rounds: Option<u32>) -> Self {
         self.config.max_rounds_override = max_rounds;
-        self
-    }
-
-    /// Set all configuration at once from a ScopeConfig
-    pub fn with_config(mut self, config: ScopeConfig) -> Self {
-        self.config = config;
         self
     }
 

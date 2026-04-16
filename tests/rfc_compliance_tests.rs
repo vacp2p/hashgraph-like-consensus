@@ -4,11 +4,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
 use hashgraph_like_consensus::{
-    api::ConsensusServiceAPI,
     error::ConsensusError,
     scope::ScopeID,
     service::DefaultConsensusService,
     session::ConsensusConfig,
+    storage::ConsensusStorage,
     types::CreateProposalRequest,
     utils::{build_vote, compute_vote_hash},
 };
@@ -305,6 +305,7 @@ async fn test_p2p_dynamic_max_rounds() {
     // With 6 YES votes out of 9, we have >4.5 YES votes, so consensus is reached
     // Verify consensus was reached (this is expected behavior)
     let result = service
+        .storage()
         .get_consensus_result(&scope, last_proposal.proposal_id)
         .await;
     assert!(
@@ -501,6 +502,7 @@ async fn test_p2p_batch_vote_processing() {
 
     // Verify by checking consensus result (6 YES votes out of 9 reaches consensus)
     let consensus_result = service
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
     assert!(
@@ -523,6 +525,7 @@ async fn test_p2p_batch_vote_processing() {
     // Or it might fail with SessionNotActive
     // Either way, verify the vote count doesn't increase and consensus result stays the same
     let final_consensus = service
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
     assert!(
@@ -577,6 +580,7 @@ async fn test_consensus_reachable_in_both_modes() {
     }
 
     let result1 = service
+        .storage()
         .get_consensus_result(&scope1, proposal1.proposal_id)
         .await;
     assert!(result1.is_ok(), "Gossipsub: Consensus should be reached");
@@ -616,6 +620,7 @@ async fn test_consensus_reachable_in_both_modes() {
     }
 
     let result2 = service
+        .storage()
         .get_consensus_result(&scope2, proposal2.proposal_id)
         .await;
     assert!(result2.is_ok(), "P2P: Consensus should be reached");
@@ -653,6 +658,7 @@ async fn test_n_le_2_requires_unanimous_yes() {
 
     // Should reach consensus immediately with unanimous YES
     let result = service
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
     assert!(result.is_ok(), "RFC Section 4: n=1 requires unanimous YES");
@@ -691,6 +697,7 @@ async fn test_n_le_2_requires_unanimous_yes() {
 
     sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
     let result = service
+        .storage()
         .get_consensus_result(&scope2, proposal2.proposal_id)
         .await;
     assert!(result.is_ok(), "RFC Section 4: n=2 requires unanimous YES");
@@ -729,6 +736,7 @@ async fn test_n_le_2_requires_unanimous_yes() {
 
     sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
     let result = service
+        .storage()
         .get_consensus_result(&scope3, proposal3.proposal_id)
         .await;
     assert!(
@@ -772,6 +780,7 @@ async fn test_n_gt_2_consensus_requirements() {
 
     // Only 1 YES vote, not enough (need 2)
     let result = service
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
     assert!(
@@ -791,6 +800,7 @@ async fn test_n_gt_2_consensus_requirements() {
 
     sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
     let result = service
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
     assert!(
@@ -958,6 +968,7 @@ async fn test_equality_of_votes_handling() {
     // We have 4 votes: 2 YES, 2 NO (equality)
     // With liveness_criteria_yes = true, should resolve to YES
     let result = service
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
     assert!(
@@ -1016,6 +1027,7 @@ async fn test_equality_of_votes_handling() {
     sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
     // Equality with liveness_criteria_yes = false should resolve to NO
     let result = service
+        .storage()
         .get_consensus_result(&scope2, proposal2.proposal_id)
         .await;
     assert!(

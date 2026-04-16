@@ -2,8 +2,8 @@ use alloy::signers::local::PrivateKeySigner;
 use tokio::time::{Duration, sleep};
 
 use hashgraph_like_consensus::{
-    api::ConsensusServiceAPI, error::ConsensusError, scope::ScopeID,
-    service::DefaultConsensusService, session::ConsensusConfig, types::CreateProposalRequest,
+    error::ConsensusError, scope::ScopeID, service::DefaultConsensusService,
+    session::ConsensusConfig, storage::ConsensusStorage, types::CreateProposalRequest,
 };
 
 const SCOPE: &str = "network_gossip_scope";
@@ -70,10 +70,12 @@ async fn test_two_peers_gossip_reaches_unanimous_yes_for_n2() {
 
     // Both peers should converge to the same consensus result.
     let res_a = peer_a
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await
         .expect("peer_a has consensus");
     let res_b = peer_b
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await
         .expect("peer_b has consensus");
@@ -151,14 +153,17 @@ async fn test_three_peers_gossip_converges_with_out_of_order_delivery() {
         .expect("peer_b accepts vote_a");
 
     let res_a = peer_a
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await
         .expect("peer_a has consensus");
     let res_b = peer_b
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await
         .expect("peer_b has consensus");
     let res_c = peer_c
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await
         .expect("peer_c has consensus");
@@ -267,18 +272,32 @@ async fn test_multi_peer_timeout_task_converges_to_failed() {
     hc.await.expect("timeout task C");
 
     // Converge to "failed" state (no consensus result).
-    assert!(matches!(
-        peer_a.get_consensus_result(&scope, proposal_id).await,
-        Err(ConsensusError::ConsensusFailed)
-    ));
-    assert!(matches!(
-        peer_b.get_consensus_result(&scope, proposal_id).await,
-        Err(ConsensusError::ConsensusFailed)
-    ));
-    assert!(matches!(
-        peer_c.get_consensus_result(&scope, proposal_id).await,
-        Err(ConsensusError::ConsensusFailed)
-    ));
+    let result_a = peer_a
+        .storage()
+        .get_consensus_result(&scope, proposal_id)
+        .await;
+    assert!(
+        matches!(result_a, Err(ConsensusError::ConsensusFailed)),
+        "peer_a should be in Failed state"
+    );
+
+    let result_b = peer_b
+        .storage()
+        .get_consensus_result(&scope, proposal_id)
+        .await;
+    assert!(
+        matches!(result_b, Err(ConsensusError::ConsensusFailed)),
+        "peer_b should be in Failed state"
+    );
+
+    let result_c = peer_c
+        .storage()
+        .get_consensus_result(&scope, proposal_id)
+        .await;
+    assert!(
+        matches!(result_c, Err(ConsensusError::ConsensusFailed)),
+        "peer_c should be in Failed state"
+    );
 }
 
 /// Four peers, check that the proposal converges to YES by liveness criteria.
@@ -403,18 +422,22 @@ async fn test_multi_peer_timeout_task_resolves_tie_by_liveness_criteria_yes() {
     hd.await.expect("timeout task D");
 
     let res_a = peer_a
+        .storage()
         .get_consensus_result(&scope, proposal_id)
         .await
         .expect("peer_a has consensus");
     let res_b = peer_b
+        .storage()
         .get_consensus_result(&scope, proposal_id)
         .await
         .expect("peer_b has consensus");
     let res_c = peer_c
+        .storage()
         .get_consensus_result(&scope, proposal_id)
         .await
         .expect("peer_c has consensus");
     let res_d = peer_d
+        .storage()
         .get_consensus_result(&scope, proposal_id)
         .await
         .expect("peer_d has consensus");

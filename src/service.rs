@@ -1,16 +1,21 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::marker::PhantomData;
+
+use alloy_signer::Signer;
 use tokio::time::Duration;
 
 use crate::{
     error::ConsensusError,
     events::{BroadcastEventBus, ConsensusEventBus},
-    protos::consensus::v1::Proposal,
+    protos::consensus::v1::{Proposal, Vote},
     scope::{ConsensusScope, ScopeID},
     scope_config::{NetworkType, ScopeConfig, ScopeConfigBuilder},
     session::{ConsensusConfig, ConsensusSession, ConsensusState},
     storage::{ConsensusStorage, InMemoryConsensusStorage},
-    types::{ConsensusEvent, SessionTransition},
-    utils::{calculate_consensus_result, current_timestamp, has_sufficient_votes},
+    types::{ConsensusEvent, CreateProposalRequest, SessionTransition},
+    utils::{
+        build_vote, calculate_consensus_result, current_timestamp, validate_proposal_timestamp,
+        validate_vote,
+    },
 };
 /// The main service that handles proposals, votes, and consensus.
 ///
@@ -61,6 +66,8 @@ impl DefaultConsensusService {
     /// Create a service with a custom limit on how many sessions can exist per scope.
     ///
     /// When the limit is reached, older sessions are automatically removed to make room.
+    /// Eviction is silent — no event is emitted. Archive results you need before they
+    /// are evicted.
     pub fn new_with_max_sessions(max_sessions_per_scope: usize) -> Self {
         Self::new_with_components(
             InMemoryConsensusStorage::new(),
@@ -96,114 +103,229 @@ where
         }
     }
 
-    /// Subscribe to events like consensus reached or consensus failed.
+    // ── Accessors ──────────────────────────────────────────────────────
+
+    /// Access the underlying storage backend.
     ///
-    /// Returns a receiver that you can use to listen for events across all scopes.
-    /// Events are broadcast to all subscribers, so multiple parts of your application
-    /// can react to consensus outcomes.
-    pub fn subscribe_to_events(&self) -> E::Receiver {
-        self.event_bus.subscribe()
+    /// Use this for reading state (sessions, proposals, scope config) and for
+    /// lifecycle operations like [`delete_scope`](ConsensusStorage::delete_scope).
+    pub fn storage(&self) -> &S {
+        &self.storage
     }
 
-    /// Get the final consensus result for a proposal, if it's been reached.
+    /// Access the underlying event bus.
     ///
-    /// Returns `Ok(true)` if consensus was YES, `Ok(false)` if NO, or `Err` if
-    /// consensus hasn't been reached yet (or the proposal doesn't exist or is still active).
-    pub async fn get_consensus_result(
+    /// Use this to [`subscribe`](ConsensusEventBus::subscribe) to consensus events.
+    pub fn event_bus(&self) -> &E {
+        &self.event_bus
+    }
+
+    // ── Consensus operations (business logic) ──────────────────────────
+
+    /// Create a new proposal and start the voting process.
+    ///
+    /// This creates the proposal and sets up a session to track votes.
+    /// The proposal will expire after the time specified in the request.
+    ///
+    /// **Important:** The library does not schedule timeouts automatically.
+    /// Your application MUST call [`handle_consensus_timeout`](Self::handle_consensus_timeout)
+    /// when the proposal's timeout elapses (e.g. via `tokio::time::sleep`).
+    /// Without this call, proposals with offline voters will remain stuck in the
+    /// `Active` state indefinitely, and the liveness criteria for silent peers
+    /// will never take effect.
+    ///
+    /// Configuration is resolved from: proposal config > scope config > global default.
+    /// If no config is provided, the scope's default configuration is used.
+    pub async fn create_proposal(
+        &self,
+        scope: &Scope,
+        request: CreateProposalRequest,
+    ) -> Result<Proposal, ConsensusError> {
+        self.create_proposal_with_config(scope, request, None).await
+    }
+
+    /// Create a new proposal with an explicit [`ConsensusConfig`] override.
+    ///
+    /// Pass `None` to fall back to scope defaults (same as [`create_proposal`](Self::create_proposal)).
+    pub async fn create_proposal_with_config(
+        &self,
+        scope: &Scope,
+        request: CreateProposalRequest,
+        config: Option<ConsensusConfig>,
+    ) -> Result<Proposal, ConsensusError> {
+        let proposal = request.into_proposal()?;
+        let config = self.resolve_config(scope, config, Some(&proposal)).await?;
+        let (session, _) = ConsensusSession::from_proposal(proposal.clone(), config.clone())?;
+        self.save_session(scope, session).await?;
+        self.trim_scope_sessions(scope).await?;
+        Ok(proposal)
+    }
+
+    /// Cast a vote on an active proposal.
+    ///
+    /// The vote is cryptographically signed with `signer` and linked into the
+    /// hashgraph chain. Returns the signed [`Vote`] for network propagation.
+    /// Each voter can only vote once per proposal.
+    pub async fn cast_vote<SN: Signer + Sync + Send>(
         &self,
         scope: &Scope,
         proposal_id: u32,
-    ) -> Result<bool, ConsensusError> {
-        let session = self
-            .storage
-            .get_session(scope, proposal_id)
-            .await?
-            .ok_or(ConsensusError::SessionNotFound)?;
-
-        match session.state {
-            ConsensusState::ConsensusReached(result) => Ok(result),
-            ConsensusState::Failed => Err(ConsensusError::ConsensusFailed),
-            ConsensusState::Active => Err(ConsensusError::ConsensusNotReached),
-        }
-    }
-
-    /// Get all proposals that are still accepting votes.
-    pub async fn get_active_proposals(
-        &self,
-        scope: &Scope,
-    ) -> Result<Option<Vec<Proposal>>, ConsensusError> {
-        let sessions = self
-            .storage
-            .list_scope_sessions(scope)
-            .await?
-            .ok_or(ConsensusError::ScopeNotFound)?;
-        let result = sessions
-            .into_iter()
-            .filter_map(|session| session.is_active().then_some(session.proposal))
-            .collect::<Vec<Proposal>>();
-        if result.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(result))
-    }
-
-    /// Get the resolved per-proposal consensus configuration for an existing session.
-    pub async fn get_proposal_config(
-        &self,
-        scope: &Scope,
-        proposal_id: u32,
-    ) -> Result<ConsensusConfig, ConsensusError> {
+        choice: bool,
+        signer: SN,
+    ) -> Result<Vote, ConsensusError> {
         let session = self.get_session(scope, proposal_id).await?;
-        Ok(session.config)
-    }
+        validate_proposal_timestamp(session.proposal.expiration_timestamp)?;
 
-    /// Get all proposals that have reached consensus, along with their results.
-    ///
-    /// Returns a map from proposal ID to result (`true` for YES, `false` for NO).
-    /// Only includes proposals that have finalized - active proposals are not included.
-    /// Returns `None` if no proposals have reached consensus.
-    pub async fn get_reached_proposals(
-        &self,
-        scope: &Scope,
-    ) -> Result<Option<HashMap<u32, bool>>, ConsensusError> {
-        let sessions = self
-            .storage
-            .list_scope_sessions(scope)
-            .await?
-            .ok_or(ConsensusError::ScopeNotFound)?;
+        let voter_address = signer.address().as_slice().to_vec();
+        if session.votes.contains_key(&voter_address) {
+            return Err(ConsensusError::UserAlreadyVoted);
+        }
 
-        let result = sessions
-            .into_iter()
-            .filter_map(|session| {
-                session
-                    .get_consensus_result()
-                    .ok()
-                    .map(|result| (session.proposal.proposal_id, result))
+        let vote = build_vote(&session.proposal, choice, signer).await?;
+        let vote_clone = vote.clone();
+        let transition = self
+            .update_session(scope, proposal_id, move |session| {
+                session.add_vote(vote_clone)
             })
-            .collect::<HashMap<u32, bool>>();
-        if result.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(result))
+            .await?;
+        self.handle_transition(scope, proposal_id, transition);
+        Ok(vote)
     }
 
-    /// Check if a proposal has collected enough votes to reach consensus.
-    pub async fn has_sufficient_votes_for_proposal(
+    /// Cast a vote and return the updated [`Proposal`] (with the new vote included).
+    ///
+    /// Convenience method useful for the proposal creator who wants to immediately
+    /// gossip the updated proposal to peers.
+    pub async fn cast_vote_and_get_proposal<SN: Signer + Sync + Send>(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+        choice: bool,
+        signer: SN,
+    ) -> Result<Proposal, ConsensusError> {
+        self.cast_vote(scope, proposal_id, choice, signer).await?;
+        let session = self.get_session(scope, proposal_id).await?;
+        Ok(session.proposal)
+    }
+
+    /// Process a proposal received from the network.
+    ///
+    /// Call this when your networking layer delivers a proposal from another peer.
+    /// The library performs no I/O — your application must handle gossip/transport
+    /// and call this method on receipt.
+    ///
+    /// Validates the proposal and all embedded votes, then stores it locally.
+    /// If enough votes are already present, consensus is reached immediately.
+    pub async fn process_incoming_proposal(
+        &self,
+        scope: &Scope,
+        proposal: Proposal,
+    ) -> Result<(), ConsensusError> {
+        if self.get_session(scope, proposal.proposal_id).await.is_ok() {
+            return Err(ConsensusError::ProposalAlreadyExist);
+        }
+        let config = self.resolve_config(scope, None, Some(&proposal)).await?;
+        let (session, transition) = ConsensusSession::from_proposal(proposal, config)?;
+        self.handle_transition(scope, session.proposal.proposal_id, transition);
+        self.save_session(scope, session).await?;
+        self.trim_scope_sessions(scope).await?;
+        Ok(())
+    }
+
+    /// Process a single vote received from the network.
+    ///
+    /// Call this when your networking layer delivers a vote from another peer.
+    /// Validates the vote (signature, timestamp, chain) and adds it to the
+    /// corresponding proposal session. May trigger consensus.
+    pub async fn process_incoming_vote(
+        &self,
+        scope: &Scope,
+        vote: Vote,
+    ) -> Result<(), ConsensusError> {
+        let session = self.get_session(scope, vote.proposal_id).await?;
+        validate_vote(
+            &vote,
+            session.proposal.expiration_timestamp,
+            session.proposal.timestamp,
+        )?;
+        let proposal_id = vote.proposal_id;
+        let transition = self
+            .update_session(scope, proposal_id, move |session| session.add_vote(vote))
+            .await?;
+        self.handle_transition(scope, proposal_id, transition);
+        Ok(())
+    }
+
+    /// Handle the timeout for a proposal.
+    ///
+    /// **The library does not call this automatically.** Your application MUST
+    /// schedule a timer (e.g. `tokio::time::sleep(config.consensus_timeout())`)
+    /// and invoke this method when it fires. Without this call, proposals with
+    /// offline voters will stay in the `Active` state forever and silent-peer
+    /// liveness logic will never run.
+    ///
+    /// At timeout, silent peers are counted toward quorum using the proposal's
+    /// `liveness_criteria_yes` flag (RFC Section 4, Silent Node Management):
+    ///
+    /// - `liveness_criteria_yes = true` — silent peers count as YES
+    /// - `liveness_criteria_yes = false` — silent peers count as NO
+    ///
+    /// Returns the consensus result if determinable, or
+    /// [`InsufficientVotesAtTimeout`](ConsensusError::InsufficientVotesAtTimeout)
+    /// if the result is a tie after counting silent peers.
+    pub async fn handle_consensus_timeout(
         &self,
         scope: &Scope,
         proposal_id: u32,
     ) -> Result<bool, ConsensusError> {
-        let session = self.get_session(scope, proposal_id).await?;
-        let total_votes = session.votes.len() as u32;
-        let expected_voters = session.proposal.expected_voters_count;
-        Ok(has_sufficient_votes(
-            total_votes,
-            expected_voters,
-            session.config.consensus_threshold(),
-        ))
+        let timeout_result: Result<Option<bool>, ConsensusError> = self
+            .update_session(scope, proposal_id, |session| {
+                if let ConsensusState::ConsensusReached(result) = session.state {
+                    return Ok(Some(result));
+                }
+                let result = calculate_consensus_result(
+                    &session.votes,
+                    session.proposal.expected_voters_count,
+                    session.config.consensus_threshold(),
+                    session.proposal.liveness_criteria_yes,
+                    true,
+                );
+                if let Some(result) = result {
+                    session.state = ConsensusState::ConsensusReached(result);
+                    Ok(Some(result))
+                } else {
+                    session.state = ConsensusState::Failed;
+                    Ok(None)
+                }
+            })
+            .await;
+
+        match timeout_result? {
+            Some(consensus_result) => {
+                self.emit_event(
+                    scope,
+                    ConsensusEvent::ConsensusReached {
+                        proposal_id,
+                        result: consensus_result,
+                        timestamp: current_timestamp()?,
+                    },
+                );
+                Ok(consensus_result)
+            }
+            None => {
+                self.emit_event(
+                    scope,
+                    ConsensusEvent::ConsensusFailed {
+                        proposal_id,
+                        timestamp: current_timestamp()?,
+                    },
+                );
+                Err(ConsensusError::InsufficientVotesAtTimeout)
+            }
+        }
     }
 
-    // Scope management methods
+    // ── Scope management ─────────────────────────────────────────────
 
     /// Get a builder for a scope configuration.
     ///
@@ -273,7 +395,7 @@ where
     ///
     /// Priority: proposal override > proposal fields (expiration_timestamp, liveness_criteria_yes)
     ///   > scope config > global default
-    pub(crate) async fn resolve_config(
+    async fn resolve_config(
         &self,
         scope: &Scope,
         proposal_override: Option<ConsensusConfig>,
@@ -315,69 +437,7 @@ where
         }
     }
 
-    /// Handle the timeout for a proposal.
-    ///
-    /// First checks if consensus has already been reached and returns the result if so.
-    /// Otherwise, calculates consensus from current votes. If consensus is reached, marks
-    /// the session as ConsensusReached and returns the result. If no consensus, marks the
-    /// session as Failed and returns an error.
-    pub async fn handle_consensus_timeout(
-        &self,
-        scope: &Scope,
-        proposal_id: u32,
-    ) -> Result<bool, ConsensusError> {
-        let timeout_result: Result<Option<bool>, ConsensusError> = self
-            .update_session(scope, proposal_id, |session| {
-                if let ConsensusState::ConsensusReached(result) = session.state {
-                    return Ok(Some(result));
-                }
-
-                // Try to calculate consensus result first - if we have enough votes, return the result
-                // even if the proposal has technically expired
-                let result = calculate_consensus_result(
-                    &session.votes,
-                    session.proposal.expected_voters_count,
-                    session.config.consensus_threshold(),
-                    session.proposal.liveness_criteria_yes,
-                    true,
-                );
-
-                if let Some(result) = result {
-                    session.state = ConsensusState::ConsensusReached(result);
-                    Ok(Some(result))
-                } else {
-                    session.state = ConsensusState::Failed;
-                    Ok(None)
-                }
-            })
-            .await;
-
-        match timeout_result? {
-            Some(consensus_result) => {
-                self.emit_event(
-                    scope,
-                    ConsensusEvent::ConsensusReached {
-                        proposal_id,
-                        result: consensus_result,
-                        timestamp: current_timestamp()?,
-                    },
-                );
-                Ok(consensus_result)
-            }
-            None => {
-                self.emit_event(
-                    scope,
-                    ConsensusEvent::ConsensusFailed {
-                        proposal_id,
-                        timestamp: current_timestamp()?,
-                    },
-                );
-                Err(ConsensusError::InsufficientVotesAtTimeout)
-            }
-        }
-    }
-
-    pub(crate) async fn get_session(
+    async fn get_session(
         &self,
         scope: &Scope,
         proposal_id: u32,
@@ -388,7 +448,7 @@ where
             .ok_or(ConsensusError::SessionNotFound)
     }
 
-    pub(crate) async fn update_session<R, F>(
+    async fn update_session<R, F>(
         &self,
         scope: &Scope,
         proposal_id: u32,
@@ -403,7 +463,7 @@ where
             .await
     }
 
-    pub(crate) async fn save_session(
+    async fn save_session(
         &self,
         scope: &Scope,
         session: ConsensusSession,
@@ -411,7 +471,7 @@ where
         self.storage.save_session(scope, session).await
     }
 
-    pub(crate) async fn trim_scope_sessions(&self, scope: &Scope) -> Result<(), ConsensusError> {
+    async fn trim_scope_sessions(&self, scope: &Scope) -> Result<(), ConsensusError> {
         self.storage
             .update_scope_sessions(scope, |sessions| {
                 if sessions.len() <= self.max_sessions_per_scope {
@@ -435,12 +495,7 @@ where
             .ok_or(ConsensusError::ScopeNotFound)
     }
 
-    pub(crate) fn handle_transition(
-        &self,
-        scope: &Scope,
-        proposal_id: u32,
-        transition: SessionTransition,
-    ) {
+    fn handle_transition(&self, scope: &Scope, proposal_id: u32, transition: SessionTransition) {
         if let SessionTransition::ConsensusReached(result) = transition {
             self.emit_event(
                 scope,
