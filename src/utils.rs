@@ -251,11 +251,17 @@ pub fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
 /// RFC Section 4 (Liveness): Determines consensus based on vote counts and liveness criteria.
 /// Returns `true` if YES wins, `false` if NO wins. If votes are tied, uses
 /// `liveness_criteria_yes` as the tie-breaker (RFC Section 4: Equality of votes).
+///
+/// When `is_timeout` is `true`, silent peers are counted toward quorum so that the
+/// liveness criteria (RFC Section 4, Silent Node Management) can actually take effect.
+/// Without this, a session with offline peers would never reach the quorum gate and
+/// the silent-peer weighting logic would be unreachable.
 pub fn calculate_consensus_result(
     votes: &HashMap<Vec<u8>, Vote>,
     expected_voters: u32,
     consensus_threshold: f64,
     liveness_criteria_yes: bool,
+    is_timeout: bool,
 ) -> Option<bool> {
     let total_votes = votes.len() as u32;
     let yes_votes = votes.values().filter(|v| v.vote).count() as u32;
@@ -270,7 +276,14 @@ pub fn calculate_consensus_result(
     }
 
     let required_votes = calculate_required_votes(expected_voters, consensus_threshold);
-    if total_votes < required_votes {
+    // At timeout, silent peers are accounted for (as YES or NO depending on liveness),
+    // so the effective total includes all expected voters.
+    let effective_total = if is_timeout {
+        expected_voters
+    } else {
+        total_votes
+    };
+    if effective_total < required_votes {
         return None;
     }
 
