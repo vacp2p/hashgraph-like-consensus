@@ -478,7 +478,7 @@ where
                     return Ok(());
                 }
 
-                sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                sessions.sort_by_key(|s| std::cmp::Reverse(s.created_at));
                 sessions.truncate(self.max_sessions_per_scope);
                 Ok(())
             })
