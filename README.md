@@ -79,11 +79,11 @@ overridden individually.
 
 ``` text
 Scope (group / channel)
-  ├── ScopeConfig (defaults for all proposals)
-  └── Proposals
-       ├── Proposal 1 → Session (inherits scope config)
-       ├── Proposal 2 → Session (inherits scope config)
-       └── Proposal 3 → Session (overrides scope config)
+  +-- ScopeConfig (defaults for all proposals)
+  +-- Proposals
+       +-- Proposal 1 -> Session (inherits scope config)
+       +-- Proposal 2 -> Session (inherits scope config)
+       +-- Proposal 3 -> Session (overrides scope config)
 ```
 
 ### Network Types
@@ -92,6 +92,32 @@ Scope (group / channel)
 | ----------------------- | -------------------- | ------------------------------------------------- |
 | **Gossipsub** (default) | Fixed 2 rounds       | Round 1 = proposal broadcast, Round 2 = all votes |
 | **P2P**                 | Dynamic `ceil(2n/3)` | Each vote advances the round by one               |
+
+### Architecture
+
+`ConsensusService` is the single entry point. All consensus business logic
+lives there. It is generic over two pluggable backends:
+
+- `ConsensusStorage` — where sessions and votes are persisted (in-memory, database, etc.)
+- `ConsensusEventBus` — how consensus events are delivered (broadcast channel, message queue, etc.)
+
+Use `service.storage()` for reads, queries, and cleanup.
+Use `service.event_bus()` for event subscription.
+
+## What the Library Does vs. What You Do
+
+This library handles **consensus calculation** — vote validation, hashgraph
+chain verification, threshold math, and liveness rules. It does **not** handle
+orchestration. Your application is responsible for:
+
+| Responsibility                       | Why                                                                                                                                                                                                                                                |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Network propagation**              | The library performs no I/O. When you create a proposal or cast a vote, you must gossip it to peers yourself. When a message arrives from the network, call `process_incoming_proposal` or `process_incoming_vote`.                                |
+| **Timeout scheduling**               | The library does not spawn timers. You must schedule a timer for each proposal (using `consensus_timeout()` from the config) and call `handle_consensus_timeout` when it fires. Without this, proposals with offline voters stay `Active` forever. |
+| **`expected_voters_count` accuracy** | This value drives all threshold math (`ceil(2n/3)` quorum, silent peer counting). If it doesn't match the actual group size, consensus results will be wrong.                                                                                      |
+| **Signer management**                | You provide the private key signer when casting a vote. The library derives the voter identity from it. Each signer may vote at most once per proposal.                                                                                            |
+| **Proposal ID tracking**             | The library generates a `proposal_id` on creation. You must store it and pass it to every subsequent call (`cast_vote`, `handle_consensus_timeout`, etc.).                                                                                         |
+| **Session eviction awareness**       | The default service keeps at most 10 sessions per scope (configurable via `new_with_max_sessions`). Older sessions are silently dropped when the limit is exceeded. Archive results before they are evicted.                                       |
 
 ## API Reference
 
@@ -170,12 +196,6 @@ let proposal = service
 
 // Process a proposal received from the network
 service.process_incoming_proposal(&scope, proposal).await?;
-
-// List active proposals
-let active: Option<Vec<Proposal>> = service.get_active_proposals(&scope).await?;
-
-// List finalized proposals (proposal_id -> result)
-let finalized: Option<HashMap<u32, bool>> = service.get_reached_proposals(&scope).await?;
 ```
 
 ### Casting and Processing Votes
@@ -193,23 +213,38 @@ let proposal = service
 service.process_incoming_vote(&scope, vote).await?;
 ```
 
-### Checking Results
+### Reading State (via Storage)
+
+All reads go through `service.storage()`:
 
 ```rust
-// Get the final consensus result (Ok(true) = YES, Ok(false) = NO)
-let result: bool = service.get_consensus_result(&scope, proposal_id).await?;
+use hashgraph_like_consensus::storage::ConsensusStorage;
 
-// Check if enough votes have been collected
-let enough: bool = service
-    .has_sufficient_votes_for_proposal(&scope, proposal_id)
-    .await?;
+// Get the consensus result for a proposal (Ok(true) = YES, Ok(false) = NO)
+let result: bool = service.storage().get_consensus_result(&scope, proposal_id).await?;
+
+// Get a proposal by ID
+let proposal = service.storage().get_proposal(&scope, proposal_id).await?;
+
+// List active proposals (empty Vec if none)
+let active: Vec<Proposal> = service.storage().get_active_proposals(&scope).await?;
+
+// List finalized proposals (proposal_id -> result)
+let reached: HashMap<u32, bool> = service.storage().get_reached_proposals(&scope).await?;
+
+// Delete all state for a scope (e.g. when a user leaves a group)
+service.storage().delete_scope(&scope).await?;
 ```
 
 ### Handling Timeouts
 
-When a proposal's timeout fires, call `handle_consensus_timeout` to finalize it.
-At timeout, silent peers (those who never voted) are counted toward quorum so that
-the `liveness_criteria_yes` flag can take effect:
+> **The library does not schedule timeouts automatically.** Your application must
+> set up a timer for each proposal and call `handle_consensus_timeout` when it
+> fires. Without this, proposals with offline voters will stay `Active` forever
+> and the silent-peer liveness logic will never run.
+
+When `handle_consensus_timeout` is called, silent peers (those who never voted)
+are counted toward quorum so that the `liveness_criteria_yes` flag can take effect:
 
 - **`liveness_criteria_yes = true`** — silent peers are counted as YES votes. A proposal
   passes unless there are enough explicit NO votes to block it.
@@ -239,15 +274,16 @@ actual votes — silent peers are not counted until timeout.
 ### Subscribing to Events
 
 ```rust
+use hashgraph_like_consensus::events::ConsensusEventBus;
 use hashgraph_like_consensus::types::ConsensusEvent;
 
-let mut rx = service.subscribe_to_events();
+let mut rx = service.event_bus().subscribe();
 
 tokio::spawn(async move {
     while let Ok((scope, event)) = rx.recv().await {
         match event {
             ConsensusEvent::ConsensusReached { proposal_id, result, timestamp } => {
-                println!("Proposal {} → {}", proposal_id, if result { "YES" } else { "NO" });
+                println!("Proposal {} -> {}", proposal_id, if result { "YES" } else { "NO" });
             }
             ConsensusEvent::ConsensusFailed { proposal_id, timestamp } => {
                 println!("Proposal {} failed to reach consensus", proposal_id);
@@ -271,16 +307,25 @@ println!(
 
 ### Custom Storage
 
-Implement the `ConsensusStorage` trait to persist proposals to a database:
+Implement the `ConsensusStorage` trait to persist proposals to a database.
+You only need to implement the primitive methods — query helpers like
+`get_consensus_result`, `get_active_proposals`, and `get_reached_proposals`
+are provided as default implementations for free.
 
 ```rust
 use hashgraph_like_consensus::storage::ConsensusStorage;
 
-pub trait ConsensusStorage<Scope> {
-    async fn save_session(&self, scope: &Scope, session: ConsensusSession) -> Result<()>;
-    async fn get_session(&self, scope: &Scope, proposal_id: u32) -> Result<Option<ConsensusSession>>;
-    // ... see storage.rs for the full trait
-}
+// Required primitives (you implement these):
+//   save_session, get_session, remove_session,
+//   list_scope_sessions, replace_scope_sessions,
+//   update_session, update_scope_sessions,
+//   stream_scope_sessions, list_scopes,
+//   get_scope_config, set_scope_config, update_scope_config,
+//   delete_scope
+//
+// Free query helpers (default implementations):
+//   get_consensus_result, get_proposal, get_proposal_config,
+//   get_active_proposals, get_reached_proposals
 ```
 
 ### Custom Event Bus
@@ -299,15 +344,15 @@ pub trait ConsensusEventBus<Scope> {
 
 ### Utility Functions
 
-The `utils` module provides low-level helpers:
+The `utils` module provides low-level helpers for advanced use cases:
 
-| Function                       | Description                                                                                                                                           |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `validate_proposal()`          | Validate a proposal and its votes                                                                                                                     |
-| `validate_vote()`              | Verify a vote's signature and structure                                                                                                               |
-| `validate_vote_chain()`        | Ensure parent/received hash chains are correct                                                                                                        |
-| `has_sufficient_votes()`       | Quick threshold check (count-based)                                                                                                                   |
-| `calculate_consensus_result()` | Determine result from collected votes using threshold and liveness rules. Accepts an `is_timeout` flag to count silent peers toward quorum at timeout |
+| Function                       | Description                                                              |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| `build_vote()`                 | Create a signed vote linked into the hashgraph chain                     |
+| `compute_vote_hash()`          | Compute the deterministic hash of a vote                                 |
+| `validate_proposal()`          | Validate a proposal and all its votes                                    |
+| `calculate_consensus_result()` | Determine result from collected votes using threshold and liveness rules |
+| `has_sufficient_votes()`       | Quick threshold check (count-based)                                      |
 
 ## Building
 

@@ -17,7 +17,7 @@ fn make_session(name: &str) -> ConsensusSession {
     let proposal = CreateProposalRequest::new(
         name.to_string(),
         PROPOSAL_PAYLOAD,
-        vec![1, 2, 3], // arbitrary "owner" bytes; signature not needed for storage tests
+        vec![1, 2, 3],
         EXPECTED_VOTERS_COUNT,
         EXPIRATION,
         true,

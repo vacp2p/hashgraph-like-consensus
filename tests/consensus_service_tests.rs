@@ -6,11 +6,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::timeout;
 
 use hashgraph_like_consensus::{
-    api::ConsensusServiceAPI,
     error::ConsensusError,
+    events::ConsensusEventBus,
     scope::ScopeID,
     service::DefaultConsensusService,
     session::ConsensusConfig,
+    storage::ConsensusStorage,
     types::{ConsensusEvent, CreateProposalRequest},
     utils::{build_vote, compute_vote_hash},
 };
@@ -100,22 +101,25 @@ async fn test_basic_consensus_flow() {
         .await
         .expect("proposal_owner vote should succeed");
 
-    assert_eq!(
-        service
+    {
+        let active = service
+            .storage()
             .get_active_proposals(&scope)
             .await
-            .unwrap()
-            .unwrap()
-            .len(),
-        1
-    );
+            .unwrap();
+        assert_eq!(active.len(), 1);
+    }
     let stats = service.get_scope_stats(&scope).await;
     assert_eq!(stats.total_sessions, 1);
+
+    // Not enough votes yet -- consensus should not be reached
+    let result = service
+        .storage()
+        .get_consensus_result(&scope, proposal.proposal_id)
+        .await;
     assert!(
-        !service
-            .has_sufficient_votes_for_proposal(&scope, proposal.proposal_id)
-            .await
-            .expect("check should work")
+        matches!(result, Err(ConsensusError::ConsensusNotReached)),
+        "should not have reached consensus with only 1 vote"
     );
 
     let voter_two = PrivateKeySigner::random();
@@ -130,11 +134,14 @@ async fn test_basic_consensus_flow() {
         .await
         .expect("third vote should succeed");
 
+    // Now consensus should be reached
+    let result = service
+        .storage()
+        .get_consensus_result(&scope, proposal.proposal_id)
+        .await;
     assert!(
-        service
-            .has_sufficient_votes_for_proposal(&scope, proposal.proposal_id)
-            .await
-            .expect("check should work")
+        result.is_ok(),
+        "consensus should be reached with 3 YES votes"
     );
 }
 
@@ -191,16 +198,22 @@ async fn test_multi_scope_isolation() {
         .await
         .expect("scope2 proposal_owner vote");
 
-    assert_eq!(
-        service
+    {
+        let active = service
+            .storage()
             .get_active_proposals(&scope1)
             .await
-            .unwrap()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(service.get_active_proposals(&scope2).await.unwrap(), None); // scope2 reached consensus
+            .unwrap();
+        assert_eq!(active.len(), 1);
+    }
+    {
+        let active = service
+            .storage()
+            .get_active_proposals(&scope2)
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 0); // scope2 reached consensus
+    }
 
     let stats1 = service.get_scope_stats(&scope1).await;
     assert_eq!(stats1.total_sessions, 1);
@@ -214,7 +227,7 @@ async fn test_multi_scope_isolation() {
 #[tokio::test]
 async fn test_consensus_threshold_emits_event() {
     let service = DefaultConsensusService::default();
-    let mut events = service.subscribe_to_events();
+    let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -325,7 +338,7 @@ async fn test_handle_consensus_timeout_already_reached() {
 #[tokio::test]
 async fn test_handle_consensus_timeout_reaches_consensus() {
     let service = DefaultConsensusService::default();
-    let mut events = service.subscribe_to_events();
+    let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -396,7 +409,7 @@ async fn test_handle_consensus_timeout_reaches_consensus() {
 #[tokio::test]
 async fn test_handle_consensus_timeout_reaches_no_consensus_with_multiple_votes() {
     let service = DefaultConsensusService::default();
-    let mut events = service.subscribe_to_events();
+    let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
 
     let yes_voter = PrivateKeySigner::random();
@@ -475,7 +488,7 @@ async fn test_handle_consensus_timeout_reaches_no_consensus_with_multiple_votes(
 #[tokio::test]
 async fn test_handle_consensus_timeout_resolves_with_liveness_yes() {
     let service = DefaultConsensusService::default();
-    let mut events = service.subscribe_to_events();
+    let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -533,6 +546,7 @@ async fn test_handle_consensus_timeout_resolves_with_liveness_yes() {
 
     // Verify get_consensus_result returns Ok(true)
     let consensus_result = service
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await
         .expect("consensus result should be available");
@@ -542,7 +556,7 @@ async fn test_handle_consensus_timeout_resolves_with_liveness_yes() {
 #[tokio::test]
 async fn test_handle_consensus_timeout_insufficient_votes() {
     let service = DefaultConsensusService::default();
-    let mut events = service.subscribe_to_events();
+    let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -610,29 +624,33 @@ async fn test_handle_consensus_timeout_insufficient_votes() {
 
     assert!(event_received, "ConsensusFailed event should be emitted");
 
-    // Verify session is marked as Failed
-    let consensus_result = service
+    // Verify session is marked as Failed via get_consensus_result
+    let result = service
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
-    assert!(matches!(
-        consensus_result,
-        Err(ConsensusError::ConsensusFailed)
-    ));
-
-    let active_proposals = service
-        .get_active_proposals(&scope)
-        .await
-        .expect("should not return error while getting active proposals");
     assert!(
-        active_proposals.is_none(),
-        "proposal should not be in active proposals"
+        matches!(result, Err(ConsensusError::ConsensusFailed)),
+        "session should be in Failed state"
     );
+
+    {
+        let active = service
+            .storage()
+            .get_active_proposals(&scope)
+            .await
+            .unwrap();
+        assert!(
+            active.is_empty(),
+            "proposal should not be in active proposals"
+        );
+    }
 }
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_no_votes_liveness_true() {
     let service = DefaultConsensusService::default();
-    let mut events = service.subscribe_to_events();
+    let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -681,7 +699,7 @@ async fn test_handle_consensus_timeout_no_votes_liveness_true() {
 #[tokio::test]
 async fn test_handle_consensus_timeout_no_votes_liveness_false() {
     let service = DefaultConsensusService::default();
-    let mut events = service.subscribe_to_events();
+    let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -730,7 +748,7 @@ async fn test_handle_consensus_timeout_no_votes_liveness_false() {
 #[tokio::test]
 async fn test_handle_consensus_timeout_reaches_consensus_p2p() {
     let service = DefaultConsensusService::default();
-    let mut events = service.subscribe_to_events();
+    let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from("scope_p2p_reaches_consensus");
     let proposal_owner = PrivateKeySigner::random();
 
@@ -797,7 +815,7 @@ async fn test_handle_consensus_timeout_reaches_consensus_p2p() {
 #[tokio::test]
 async fn test_handle_consensus_timeout_insufficient_votes_p2p() {
     let service = DefaultConsensusService::default();
-    let mut events = service.subscribe_to_events();
+    let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from("scope_p2p_insufficient_votes");
     let proposal_owner = PrivateKeySigner::random();
 
@@ -1296,10 +1314,11 @@ async fn test_handle_consensus_timeout_is_idempotent_for_failed_session() {
         ConsensusError::InsufficientVotesAtTimeout
     ));
 
-    let state = service
+    let result = service
+        .storage()
         .get_consensus_result(&scope, proposal.proposal_id)
         .await;
-    assert!(matches!(state, Err(ConsensusError::ConsensusFailed)));
+    assert!(matches!(result, Err(ConsensusError::ConsensusFailed)));
 }
 
 #[tokio::test]
@@ -1321,7 +1340,7 @@ async fn test_handle_consensus_timeout_rejects_unknown_scope() {
 #[tokio::test]
 async fn test_cast_vote_still_active_does_not_emit_consensus_event() {
     let service = DefaultConsensusService::default();
-    let mut events = service.subscribe_to_events();
+    let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from("still_active_no_event_scope");
     let proposal_owner = PrivateKeySigner::random();
 
@@ -1382,6 +1401,7 @@ async fn test_process_incoming_proposal_resolve_config_uses_base_timeout_when_ex
         .expect("incoming proposal should be accepted");
 
     let resolved = service
+        .storage()
         .get_proposal_config(&scope, incoming.proposal_id)
         .await
         .expect("resolved config");
@@ -1428,13 +1448,12 @@ async fn test_get_reached_proposals_with_consensus() {
         .expect("vote should succeed");
 
     // Get reached proposals
-    let reached = service
+    let reached_map = service
+        .storage()
         .get_reached_proposals(&scope)
         .await
-        .expect("should not return error");
+        .unwrap();
 
-    assert!(reached.is_some(), "should have reached proposals");
-    let reached_map = reached.unwrap();
     assert_eq!(
         reached_map.len(),
         1,
@@ -1479,13 +1498,14 @@ async fn test_get_reached_proposals_no_consensus() {
 
     // Get reached proposals
     let reached = service
+        .storage()
         .get_reached_proposals(&scope)
         .await
-        .expect("should not return error");
+        .unwrap();
 
     assert!(
-        reached.is_none(),
-        "should return None when no proposals have reached consensus"
+        reached.is_empty(),
+        "should return empty when no proposals have reached consensus"
     );
 }
 
@@ -1564,13 +1584,12 @@ async fn test_get_reached_proposals_mixed_states() {
     // Don't cast enough votes for proposal3
 
     // Get reached proposals
-    let reached = service
+    let reached_map = service
+        .storage()
         .get_reached_proposals(&scope)
         .await
-        .expect("should not return error");
+        .unwrap();
 
-    assert!(reached.is_some(), "should have reached proposals");
-    let reached_map = reached.unwrap();
     assert_eq!(
         reached_map.len(),
         2,
@@ -1606,15 +1625,15 @@ async fn test_get_reached_proposals_nonexistent_scope() {
     let nonexistent_scope = ScopeID::from("nonexistent");
 
     // Get reached proposals for non-existent scope
-    let result = service.get_reached_proposals(&nonexistent_scope).await;
+    let reached = service
+        .storage()
+        .get_reached_proposals(&nonexistent_scope)
+        .await
+        .unwrap();
 
     assert!(
-        result.is_err(),
-        "should return error for non-existent scope"
-    );
-    assert!(
-        matches!(result.unwrap_err(), ConsensusError::ScopeNotFound),
-        "should return ScopeNotFound error"
+        reached.is_empty(),
+        "should return empty map for non-existent scope"
     );
 }
 
@@ -1641,9 +1660,129 @@ async fn test_unknown_scope_queries_stats_and_active_proposals() {
         "unknown scope should have zero failed sessions"
     );
 
-    let active_result = service.get_active_proposals(&unknown_scope).await;
+    let active = service
+        .storage()
+        .get_active_proposals(&unknown_scope)
+        .await
+        .unwrap();
     assert!(
-        matches!(active_result, Err(ConsensusError::ScopeNotFound)),
-        "get_active_proposals should return ScopeNotFound for unknown scope"
+        active.is_empty(),
+        "get_active_proposals should return empty vec for unknown scope"
+    );
+}
+
+#[tokio::test]
+async fn test_delete_scope_cleans_up_all_state() {
+    let service = DefaultConsensusService::default();
+    let scope = ScopeID::from("delete_scope_test");
+    let proposal_owner = PrivateKeySigner::random();
+
+    // 1. Create proposal and reach consensus
+    let proposal = setup_proposal(
+        &service,
+        &scope,
+        &proposal_owner,
+        EXPECTED_VOTERS_COUNT_1,
+        true,
+        ConsensusConfig::gossipsub(),
+    )
+    .await;
+
+    service
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .await
+        .expect("vote should succeed");
+
+    // Verify state exists
+    let consensus_result = service
+        .storage()
+        .get_consensus_result(&scope, proposal.proposal_id)
+        .await;
+    assert!(consensus_result.is_ok(), "consensus should be reached");
+
+    {
+        let reached = service
+            .storage()
+            .get_reached_proposals(&scope)
+            .await
+            .unwrap();
+        assert!(
+            !reached.is_empty(),
+            "should have reached proposals before delete"
+        );
+    }
+
+    // 2. Delete scope
+    service
+        .storage()
+        .delete_scope(&scope)
+        .await
+        .expect("delete_scope should succeed");
+
+    // 3. Verify all state is gone
+    let active = service
+        .storage()
+        .get_active_proposals(&scope)
+        .await
+        .unwrap();
+    assert!(
+        active.is_empty(),
+        "get_active_proposals should return empty vec after delete"
+    );
+
+    let reached = service
+        .storage()
+        .get_reached_proposals(&scope)
+        .await
+        .unwrap();
+    assert!(
+        reached.is_empty(),
+        "get_reached_proposals should return empty map after delete"
+    );
+
+    let result = service
+        .storage()
+        .get_consensus_result(&scope, proposal.proposal_id)
+        .await;
+    assert!(
+        matches!(result, Err(ConsensusError::SessionNotFound)),
+        "get_consensus_result should return SessionNotFound after delete"
+    );
+
+    // 4. Verify scope can be reused (fresh start)
+    let new_owner = PrivateKeySigner::random();
+    let new_proposal = setup_proposal(
+        &service,
+        &scope,
+        &new_owner,
+        EXPECTED_VOTERS_COUNT_1,
+        true,
+        ConsensusConfig::gossipsub(),
+    )
+    .await;
+
+    service
+        .cast_vote(&scope, new_proposal.proposal_id, VOTE_YES, new_owner)
+        .await
+        .expect("vote on new proposal should succeed");
+
+    let new_result = service
+        .storage()
+        .get_consensus_result(&scope, new_proposal.proposal_id)
+        .await
+        .expect("new consensus should be reachable");
+    assert!(new_result, "new proposal should reach YES consensus");
+}
+
+#[tokio::test]
+async fn test_delete_scope_on_unknown_scope_is_ok() {
+    let service = DefaultConsensusService::default();
+    let unknown_scope = ScopeID::from("never_existed");
+
+    // Deleting a scope that was never created should not error
+    let result = service.storage().delete_scope(&unknown_scope).await;
+    assert!(
+        result.is_ok(),
+        "delete_scope on unknown scope should succeed"
     );
 }

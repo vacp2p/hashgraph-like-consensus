@@ -10,8 +10,11 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
 use crate::{
-    error::ConsensusError, scope::ConsensusScope, scope_config::ScopeConfig,
-    session::ConsensusSession,
+    error::ConsensusError,
+    protos::consensus::v1::Proposal,
+    scope::ConsensusScope,
+    scope_config::ScopeConfig,
+    session::{ConsensusConfig, ConsensusSession},
 };
 
 /// Trait for storing and retrieving consensus sessions.
@@ -101,6 +104,16 @@ where
         config: ScopeConfig,
     ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
 
+    /// Remove all data for a scope (sessions, config, everything).
+    ///
+    /// Called when a group is left or deleted. After this call, the scope
+    /// behaves as if it was never initialized — creating new proposals on it
+    /// starts fresh.
+    fn delete_scope(
+        &self,
+        scope: &Scope,
+    ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
+
     /// Apply a mutation to an existing scope configuration.
     fn update_scope_config<F>(
         &self,
@@ -109,6 +122,112 @@ where
     ) -> impl Future<Output = Result<(), ConsensusError>> + Send
     where
         F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError> + Send;
+
+    // ── Query helpers (default implementations) ────────────────────────
+    //
+    // These are derived from the primitives above. Storage implementors
+    // get them for free — override only if your backend can do it faster.
+
+    /// Get the consensus result for a proposal.
+    ///
+    /// Returns `Ok(true)` for YES, `Ok(false)` for NO.
+    /// Returns [`SessionNotFound`](ConsensusError::SessionNotFound) if the
+    /// proposal doesn't exist,
+    /// [`ConsensusFailed`](ConsensusError::ConsensusFailed) if the session
+    /// failed, or [`ConsensusNotReached`](ConsensusError::ConsensusNotReached)
+    /// if voting is still active.
+    fn get_consensus_result(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> impl Future<Output = Result<bool, ConsensusError>> + Send {
+        async move {
+            use crate::session::ConsensusState;
+            let session = self
+                .get_session(scope, proposal_id)
+                .await?
+                .ok_or(ConsensusError::SessionNotFound)?;
+            match session.state {
+                ConsensusState::ConsensusReached(result) => Ok(result),
+                ConsensusState::Failed => Err(ConsensusError::ConsensusFailed),
+                ConsensusState::Active => Err(ConsensusError::ConsensusNotReached),
+            }
+        }
+    }
+
+    /// Get a proposal by ID.
+    ///
+    /// Returns [`SessionNotFound`](ConsensusError::SessionNotFound) if the
+    /// proposal doesn't exist.
+    fn get_proposal(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> impl Future<Output = Result<Proposal, ConsensusError>> + Send {
+        async move {
+            let session = self
+                .get_session(scope, proposal_id)
+                .await?
+                .ok_or(ConsensusError::SessionNotFound)?;
+            Ok(session.proposal)
+        }
+    }
+
+    /// Get the resolved configuration for a proposal.
+    ///
+    /// Returns [`SessionNotFound`](ConsensusError::SessionNotFound) if the
+    /// proposal doesn't exist.
+    fn get_proposal_config(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+    ) -> impl Future<Output = Result<ConsensusConfig, ConsensusError>> + Send {
+        async move {
+            let session = self
+                .get_session(scope, proposal_id)
+                .await?
+                .ok_or(ConsensusError::SessionNotFound)?;
+            Ok(session.config)
+        }
+    }
+
+    /// Get all proposals that are still accepting votes.
+    ///
+    /// Returns an empty `Vec` if no active proposals exist or the scope is unknown.
+    fn get_active_proposals(
+        &self,
+        scope: &Scope,
+    ) -> impl Future<Output = Result<Vec<Proposal>, ConsensusError>> + Send {
+        async move {
+            let sessions = self.list_scope_sessions(scope).await?.unwrap_or_default();
+            Ok(sessions
+                .into_iter()
+                .filter(|s| s.is_active())
+                .map(|s| s.proposal)
+                .collect())
+        }
+    }
+
+    /// Get all proposals that reached consensus, with their results.
+    ///
+    /// Returns a map from `proposal_id` to result (`true` = YES, `false` = NO).
+    /// Returns an empty map if no proposals reached consensus or the scope is unknown.
+    fn get_reached_proposals(
+        &self,
+        scope: &Scope,
+    ) -> impl Future<Output = Result<HashMap<u32, bool>, ConsensusError>> + Send {
+        async move {
+            let sessions = self.list_scope_sessions(scope).await?.unwrap_or_default();
+            Ok(sessions
+                .into_iter()
+                .filter_map(|s| {
+                    s.get_consensus_result()
+                        .ok()
+                        .map(|result| (s.proposal.proposal_id, result))
+                })
+                .collect())
+        }
+    }
 }
 
 /// In-memory storage for consensus sessions.
@@ -297,6 +416,16 @@ where
         config.validate()?;
         let mut configs = self.scope_configs.write().await;
         configs.insert(scope.clone(), config);
+        Ok(())
+    }
+
+    async fn delete_scope(&self, scope: &Scope) -> Result<(), ConsensusError> {
+        let mut sessions = self.sessions.write().await;
+        sessions.remove(scope);
+        drop(sessions);
+
+        let mut configs = self.scope_configs.write().await;
+        configs.remove(scope);
         Ok(())
     }
 

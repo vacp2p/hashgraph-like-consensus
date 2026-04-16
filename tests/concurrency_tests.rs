@@ -4,8 +4,8 @@ use std::{sync::Arc, time::Duration};
 use tokio::{spawn, sync::Barrier, time::sleep};
 
 use hashgraph_like_consensus::{
-    api::ConsensusServiceAPI, error::ConsensusError, scope::ScopeID,
-    service::DefaultConsensusService, session::ConsensusConfig, types::CreateProposalRequest,
+    error::ConsensusError, scope::ScopeID, service::DefaultConsensusService,
+    session::ConsensusConfig, storage::ConsensusStorage, types::CreateProposalRequest,
 };
 
 const SCOPE: &str = "concurrency_scope";
@@ -74,7 +74,10 @@ async fn test_concurrent_vote_casting() {
     assert_eq!(success_count, 10, "All 10 unique votes should succeed");
 
     sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
-    let result = service.get_consensus_result(&scope, proposal_id).await;
+    let result = service
+        .storage()
+        .get_consensus_result(&scope, proposal_id)
+        .await;
     assert!(
         result.is_ok(),
         "Consensus should be reached with concurrent votes"

@@ -46,11 +46,16 @@ pub struct CreateProposalRequest {
     pub payload: Vec<u8>,
     /// The address (public key bytes) of whoever created this proposal.
     pub proposal_owner: Vec<u8>,
-    /// How many people are expected to vote (used to calculate consensus threshold).
+    /// How many people are expected to vote. This drives all threshold math
+    /// (`ceil(2n/3)` quorum, silent peer counting at timeout). Must match the
+    /// actual group size — a wrong value produces wrong consensus results.
     pub expected_voters_count: u32,
     /// The timestamp at which the proposal becomes outdated.
     pub expiration_timestamp: u64,
-    /// What happens if votes are tied: `true` means YES wins, `false` means NO wins.
+    /// How silent peers (those who never vote) are counted at timeout:
+    /// `true` = silent peers count as YES, `false` = silent peers count as NO.
+    /// Also used as the tie-breaker when all expected voters have voted and
+    /// YES/NO counts are equal.
     pub liveness_criteria_yes: bool,
 }
 

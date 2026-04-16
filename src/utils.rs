@@ -29,7 +29,7 @@ fn fold_u128_to_u32(n: u128) -> u32 {
 ///
 /// Uses XOR folding so all 128 bits of the UUID contribute to the result,
 /// avoiding collisions from simple truncation.
-pub fn generate_id() -> u32 {
+pub(crate) fn generate_id() -> u32 {
     let uuid = Uuid::new_v4();
     fold_u128_to_u32(uuid.as_u128())
 }
@@ -106,7 +106,7 @@ pub async fn build_vote<S: Signer + Sync>(
 ///
 /// Checks that the signature was created by the owner's private key and that
 /// it signs the correct vote data. Returns `true` if valid, `false` otherwise.
-pub fn verify_vote_hash(
+fn verify_vote_hash(
     signature: &[u8],
     public_key: &[u8],
     message: &[u8],
@@ -148,7 +148,7 @@ pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
 /// RFC Section 3.4: Validates timestamps (reject future timestamps and votes older than 1 hour).
 /// Also checks that the vote hash is correct, the signature is valid, and the vote hasn't expired.
 /// This prevents replay attacks and ensures vote integrity.
-pub fn validate_vote(
+pub(crate) fn validate_vote(
     vote: &Vote,
     expiration_timestamp: u64,
     creation_time: u64,
@@ -204,7 +204,7 @@ pub fn validate_vote(
 
 /// Validate that votes form a correct hashgraph chain.
 /// RFC Section 2.2 and 2.3.
-pub fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
+pub(crate) fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> {
     if votes.len() <= 1 {
         return Ok(());
     }
@@ -321,7 +321,7 @@ pub fn calculate_consensus_result(
 ///
 /// For `n <= 2`, all voters must participate. For `n > 2`, applies the threshold
 /// formula `ceil(n * threshold)`.
-pub fn calculate_required_votes(expected_voters: u32, consensus_threshold: f64) -> u32 {
+fn calculate_required_votes(expected_voters: u32, consensus_threshold: f64) -> u32 {
     // RFC Section 4: For n ≤ 2, require all votes. For n > 2, use threshold (default 2n/3)
     if expected_voters <= 2 {
         expected_voters
@@ -331,7 +331,7 @@ pub fn calculate_required_votes(expected_voters: u32, consensus_threshold: f64) 
 }
 
 /// Calculate the dynamic round cap for P2P networks (`ceil(2n/3)` by default).
-pub fn calculate_max_rounds(expected_voters: u32, consensus_threshold: f64) -> u32 {
+pub(crate) fn calculate_max_rounds(expected_voters: u32, consensus_threshold: f64) -> u32 {
     calculate_threshold_based_value(expected_voters, consensus_threshold)
 }
 
@@ -354,7 +354,7 @@ pub(crate) fn current_timestamp() -> Result<u64, ConsensusError> {
 /// RFC Section 2.5.4: Verifies that the proposal has not expired by checking that
 /// the current time is less than the expiration timestamp.
 /// Returns an error if the proposal has expired.
-pub fn validate_proposal_timestamp(expiration_timestamp: u64) -> Result<(), ConsensusError> {
+pub(crate) fn validate_proposal_timestamp(expiration_timestamp: u64) -> Result<(), ConsensusError> {
     let now = current_timestamp()?;
     if now >= expiration_timestamp {
         return Err(ConsensusError::ProposalExpired);
@@ -363,7 +363,7 @@ pub fn validate_proposal_timestamp(expiration_timestamp: u64) -> Result<(), Cons
 }
 
 /// Validate that a consensus threshold is in the valid range [0.0, 1.0].
-pub fn validate_threshold(threshold: f64) -> Result<(), ConsensusError> {
+pub(crate) fn validate_threshold(threshold: f64) -> Result<(), ConsensusError> {
     if !(0.0..=1.0).contains(&threshold) {
         return Err(ConsensusError::InvalidConsensusThreshold);
     }
@@ -371,7 +371,7 @@ pub fn validate_threshold(threshold: f64) -> Result<(), ConsensusError> {
 }
 
 /// Validate that a timeout is greater than 0.
-pub fn validate_timeout(timeout: Duration) -> Result<(), ConsensusError> {
+pub(crate) fn validate_timeout(timeout: Duration) -> Result<(), ConsensusError> {
     if timeout.is_zero() {
         return Err(ConsensusError::InvalidTimeout);
     }
@@ -379,7 +379,9 @@ pub fn validate_timeout(timeout: Duration) -> Result<(), ConsensusError> {
 }
 
 /// Validate that `expected_voters_count` is at least 1.
-pub fn validate_expected_voters_count(expected_voters_count: u32) -> Result<(), ConsensusError> {
+pub(crate) fn validate_expected_voters_count(
+    expected_voters_count: u32,
+) -> Result<(), ConsensusError> {
     if expected_voters_count == 0 {
         return Err(ConsensusError::InvalidExpectedVotersCount);
     }

@@ -3,7 +3,6 @@ use alloy::signers::{Signer, local::PrivateKeySigner};
 use prost::Message;
 
 use hashgraph_like_consensus::{
-    api::ConsensusServiceAPI,
     error::ConsensusError,
     scope::ScopeID,
     service::DefaultConsensusService,

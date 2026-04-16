@@ -12,6 +12,40 @@
 //! 3. Once enough votes are collected the session transitions to
 //!    [`session::ConsensusState::ConsensusReached`] and a [`types::ConsensusEvent`] is emitted.
 //!
+//! # What the library does NOT do
+//!
+//! This library handles **consensus calculation** (vote validation, hashgraph
+//! verification, threshold math, liveness rules). It performs **no I/O and no
+//! orchestration**. Your application is responsible for:
+//!
+//! - **Network propagation** — gossip proposals and votes to peers yourself;
+//!   call [`process_incoming_proposal`](service::ConsensusService::process_incoming_proposal)
+//!   / [`process_incoming_vote`](service::ConsensusService::process_incoming_vote) on receipt.
+//! - **Timeout scheduling** — schedule a timer per proposal and call
+//!   [`handle_consensus_timeout`](service::ConsensusService::handle_consensus_timeout)
+//!   when it fires. Without this, proposals with offline voters stay `Active`
+//!   forever and silent-peer liveness logic never runs.
+//! - **`expected_voters_count` accuracy** — this drives all threshold math;
+//!   a wrong value produces wrong results.
+//! - **Session eviction awareness** — the default service keeps at most 10
+//!   sessions per scope; older sessions are silently dropped.
+//!
+//! # Architecture
+//!
+//! [`ConsensusService`](service::ConsensusService) is the single entry point.
+//! It is generic over two pluggable backends:
+//!
+//! - [`ConsensusStorage`](storage::ConsensusStorage) — where sessions and votes
+//!   are persisted (in-memory, database, etc.)
+//! - [`ConsensusEventBus`](events::ConsensusEventBus) — how consensus events
+//!   are delivered (broadcast channel, message queue, etc.)
+//!
+//! All consensus business logic lives in the service. The backends are pure
+//! infrastructure — swap them without changing any consensus behavior.
+//! Use [`storage()`](service::ConsensusService::storage) and
+//! [`event_bus()`](service::ConsensusService::event_bus) to access the backends
+//! directly for reads, cleanup, and event subscription.
+//!
 //! # Getting started
 //!
 //! The main entry point is [`service::DefaultConsensusService`] (a type alias for
@@ -19,7 +53,6 @@
 //!
 //! ```rust,no_run
 //! use hashgraph_like_consensus::{
-//!     api::ConsensusServiceAPI,
 //!     scope::ScopeID,
 //!     service::DefaultConsensusService,
 //!     types::CreateProposalRequest,
@@ -40,7 +73,7 @@
 //!             signer.address().as_slice().to_vec(),
 //!             3,    // expected voters
 //!             60,   // expiration (seconds from now)
-//!             true, // tie-breaker: YES wins on equality
+//!             true, // liveness: silent peers count as YES at timeout
 //!         )?,
 //!     )
 //!     .await?;
@@ -56,8 +89,7 @@
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! | [`service`] | Main [`ConsensusService`](service::ConsensusService) and [`DefaultConsensusService`](service::DefaultConsensusService) |
-//! | [`api`] | [`ConsensusServiceAPI`](api::ConsensusServiceAPI) trait defining the public contract |
+//! | [`service`] | [`ConsensusService`](service::ConsensusService) and [`DefaultConsensusService`](service::DefaultConsensusService) |
 //! | [`session`] | [`ConsensusSession`](session::ConsensusSession), [`ConsensusConfig`](session::ConsensusConfig), and [`ConsensusState`](session::ConsensusState) |
 //! | [`scope`] | [`ConsensusScope`](scope::ConsensusScope) trait and [`ScopeID`](scope::ScopeID) alias |
 //! | [`scope_config`] | Per-scope defaults ([`ScopeConfig`](scope_config::ScopeConfig), [`NetworkType`](scope_config::NetworkType)) |
@@ -75,13 +107,11 @@ pub mod protos {
     }
 }
 
-pub mod api;
 pub mod error;
 pub mod events;
 pub mod scope;
 pub mod scope_config;
 pub mod service;
-pub mod service_consensus;
 pub mod service_stats;
 pub mod session;
 pub mod storage;
