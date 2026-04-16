@@ -339,6 +339,7 @@ where
                     session.proposal.expected_voters_count,
                     session.config.consensus_threshold(),
                     session.proposal.liveness_criteria_yes,
+                    true,
                 );
 
                 if let Some(result) = result {

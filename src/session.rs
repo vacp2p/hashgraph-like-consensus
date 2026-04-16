@@ -364,7 +364,7 @@ impl ConsensusSession {
         let threshold = self.config.consensus_threshold;
         let liveness = self.proposal.liveness_criteria_yes;
 
-        match calculate_consensus_result(&self.votes, expected_voters, threshold, liveness) {
+        match calculate_consensus_result(&self.votes, expected_voters, threshold, liveness, false) {
             Some(result) => {
                 self.state = ConsensusState::ConsensusReached(result);
                 SessionTransition::ConsensusReached(result)

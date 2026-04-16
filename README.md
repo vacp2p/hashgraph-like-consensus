@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 signer.address().as_slice().to_vec(), // owner
                 3,                           // expected voters
                 60,                          // expiration (seconds from now)
-                true,                        // tie-breaker: YES wins on equality
+                true,                        // liveness: silent peers count as YES at timeout
             )?,
         )
         .await?;
@@ -77,7 +77,7 @@ A **scope** groups related proposals together and carries default configuration
 (network type, threshold, timeout). Proposals inherit scope defaults unless
 overridden individually.
 
-```
+``` text
 Scope (group / channel)
   ├── ScopeConfig (defaults for all proposals)
   └── Proposals
@@ -164,7 +164,7 @@ let proposal = service
         owner_address,
         3,     // expected voters
         60,    // expiration (seconds from now)
-        true,  // tie-breaker: YES wins on equality
+        true,  // liveness: silent peers count as YES at timeout
     )?)
     .await?;
 
@@ -204,6 +204,37 @@ let enough: bool = service
     .has_sufficient_votes_for_proposal(&scope, proposal_id)
     .await?;
 ```
+
+### Handling Timeouts
+
+When a proposal's timeout fires, call `handle_consensus_timeout` to finalize it.
+At timeout, silent peers (those who never voted) are counted toward quorum so that
+the `liveness_criteria_yes` flag can take effect:
+
+- **`liveness_criteria_yes = true`** — silent peers are counted as YES votes. A proposal
+  passes unless there are enough explicit NO votes to block it.
+- **`liveness_criteria_yes = false`** — silent peers are counted as NO votes. A proposal
+  fails unless there are enough explicit YES votes to carry it.
+
+The only case where timeout produces no result is a **tie** (equal YES and NO weight
+after counting silent peers), which marks the session as failed.
+
+```rust
+// Schedule a timeout (typically via tokio::time::sleep)
+tokio::time::sleep(config.consensus_timeout()).await;
+
+match service.handle_consensus_timeout(&scope, proposal_id).await {
+    Ok(true)  => println!("Consensus: YES"),
+    Ok(false) => println!("Consensus: NO"),
+    Err(ConsensusError::InsufficientVotesAtTimeout) => {
+        println!("Tied — no consensus");
+    }
+    Err(e) => eprintln!("Error: {e}"),
+}
+```
+
+During normal voting (before timeout), the quorum gate still requires `ceil(2n/3)`
+actual votes — silent peers are not counted until timeout.
 
 ### Subscribing to Events
 
@@ -270,13 +301,13 @@ pub trait ConsensusEventBus<Scope> {
 
 The `utils` module provides low-level helpers:
 
-| Function                       | Description                                                              |
-| ------------------------------ | ------------------------------------------------------------------------ |
-| `validate_proposal()`          | Validate a proposal and its votes                                        |
-| `validate_vote()`              | Verify a vote's signature and structure                                  |
-| `validate_vote_chain()`        | Ensure parent/received hash chains are correct                           |
-| `has_sufficient_votes()`       | Quick threshold check (count-based)                                      |
-| `calculate_consensus_result()` | Determine result from collected votes using threshold and liveness rules |
+| Function                       | Description                                                                                                                                           |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `validate_proposal()`          | Validate a proposal and its votes                                                                                                                     |
+| `validate_vote()`              | Verify a vote's signature and structure                                                                                                               |
+| `validate_vote_chain()`        | Ensure parent/received hash chains are correct                                                                                                        |
+| `has_sufficient_votes()`       | Quick threshold check (count-based)                                                                                                                   |
+| `calculate_consensus_result()` | Determine result from collected votes using threshold and liveness rules. Accepts an `is_timeout` flag to count silent peers toward quorum at timeout |
 
 ## Building
 

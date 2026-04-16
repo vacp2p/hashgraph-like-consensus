@@ -170,6 +170,8 @@ async fn test_three_peers_gossip_converges_with_out_of_order_delivery() {
 
 /// Multiple peers each schedule their own timeout finalization task.
 /// All peers should converge to the same "failed" state.
+/// With liveness=false and 2 YES votes out of 4, silent peers count as NO at timeout,
+/// resulting in a 2 YES / 2 NO tie → no consensus.
 #[tokio::test]
 async fn test_multi_peer_timeout_task_converges_to_failed() {
     let peer_a = DefaultConsensusService::default();
@@ -177,8 +179,9 @@ async fn test_multi_peer_timeout_task_converges_to_failed() {
     let peer_c = DefaultConsensusService::default();
     let scope = ScopeID::from(format!("{SCOPE}_timeout"));
 
-    // n=4, but we will only submit 1 vote -> should fail on timeout finalization.
+    // n=4, liveness=false, 2 YES votes → 2 YES + 2 silent(NO) = tied → fail.
     let owner_a = PrivateKeySigner::random();
+    let voter_b = PrivateKeySigner::random();
     let proposal = peer_a
         .create_proposal_with_config(
             &scope,
@@ -188,7 +191,7 @@ async fn test_multi_peer_timeout_task_converges_to_failed() {
                 owner_bytes(&owner_a),
                 4,
                 EXPIRATION,
-                true,
+                false,
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
@@ -205,7 +208,7 @@ async fn test_multi_peer_timeout_task_converges_to_failed() {
         .await
         .expect("peer_c accepts proposal");
 
-    // Only 1 vote total.
+    // 2 YES votes total.
     let vote_a = peer_a
         .cast_vote(&scope, proposal.proposal_id, true, owner_a)
         .await
@@ -213,11 +216,24 @@ async fn test_multi_peer_timeout_task_converges_to_failed() {
     peer_b
         .process_incoming_vote(&scope, vote_a.clone())
         .await
-        .expect("peer_b accepts vote");
+        .expect("peer_b accepts vote_a");
     peer_c
         .process_incoming_vote(&scope, vote_a)
         .await
-        .expect("peer_c accepts vote");
+        .expect("peer_c accepts vote_a");
+
+    let vote_b = peer_b
+        .cast_vote(&scope, proposal.proposal_id, true, voter_b)
+        .await
+        .expect("peer_b vote");
+    peer_a
+        .process_incoming_vote(&scope, vote_b.clone())
+        .await
+        .expect("peer_a accepts vote_b");
+    peer_c
+        .process_incoming_vote(&scope, vote_b)
+        .await
+        .expect("peer_c accepts vote_b");
 
     // App-style scheduling: each peer runs its own timeout task.
     let proposal_id = proposal.proposal_id;
