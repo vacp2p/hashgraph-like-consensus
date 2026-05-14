@@ -17,6 +17,40 @@ use hashgraph_like_consensus::{
     utils::{build_vote, compute_vote_hash},
 };
 
+async fn cast_remote_vote(
+    service: &DefaultConsensusService,
+    scope: &ScopeID,
+    proposal_id: u32,
+    choice: bool,
+    signer: &EthereumConsensusSigner,
+) -> Result<
+    hashgraph_like_consensus::protos::consensus::v1::Vote,
+    hashgraph_like_consensus::error::ConsensusError,
+> {
+    let proposal = service.storage().get_proposal(scope, proposal_id).await?;
+    let vote = build_vote(&proposal, choice, signer).await?;
+    service.process_incoming_vote(scope, vote.clone()).await?;
+    Ok(vote)
+}
+
+async fn cast_remote_vote_and_get_proposal(
+    service: &DefaultConsensusService,
+    scope: &ScopeID,
+    proposal_id: u32,
+    choice: bool,
+    signer: &EthereumConsensusSigner,
+) -> Result<
+    hashgraph_like_consensus::protos::consensus::v1::Proposal,
+    hashgraph_like_consensus::error::ConsensusError,
+> {
+    cast_remote_vote(service, scope, proposal_id, choice, signer).await?;
+    service.storage().get_proposal(scope, proposal_id).await
+}
+
+fn make_service() -> DefaultConsensusService {
+    DefaultConsensusService::new(EthereumConsensusSigner::new(PrivateKeySigner::random()))
+}
+
 fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
     EthereumConsensusSigner::new(signer)
 }
@@ -72,15 +106,14 @@ async fn cast_vote_or_panic(
     signer: PrivateKeySigner,
     msg: &str,
 ) {
-    service
-        .cast_vote(scope, proposal_id, choice, wrap(signer))
+    cast_remote_vote(service, scope, proposal_id, choice, &wrap(signer))
         .await
         .expect(msg);
 }
 
 #[tokio::test]
 async fn test_basic_consensus_flow() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -101,10 +134,15 @@ async fn test_basic_consensus_flow() {
         .await
         .expect("proposal should be created");
 
-    let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
-        .await
-        .expect("proposal_owner vote should succeed");
+    let proposal = cast_remote_vote_and_get_proposal(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner),
+    )
+    .await
+    .expect("proposal_owner vote should succeed");
 
     {
         let active = service
@@ -128,16 +166,26 @@ async fn test_basic_consensus_flow() {
     );
 
     let voter_two = PrivateKeySigner::random();
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(voter_two))
-        .await
-        .expect("second vote should succeed");
+    cast_remote_vote(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(voter_two),
+    )
+    .await
+    .expect("second vote should succeed");
 
     let voter_three = PrivateKeySigner::random();
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(voter_three))
-        .await
-        .expect("third vote should succeed");
+    cast_remote_vote(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(voter_three),
+    )
+    .await
+    .expect("third vote should succeed");
 
     // Now consensus should be reached
     let result = service
@@ -152,7 +200,10 @@ async fn test_basic_consensus_flow() {
 
 #[tokio::test]
 async fn test_multi_scope_isolation() {
-    let service = DefaultConsensusService::new_with_max_sessions(5);
+    let service = DefaultConsensusService::new_with_max_sessions(
+        EthereumConsensusSigner::new(PrivateKeySigner::random()),
+        5,
+    );
     let scope1 = ScopeID::from(SCOPE1_NAME);
     let scope2 = ScopeID::from(SCOPE2_NAME);
 
@@ -176,10 +227,15 @@ async fn test_multi_scope_isolation() {
         .await
         .expect("scope1 proposal");
 
-    service
-        .cast_vote_and_get_proposal(&scope1, proposal_1.proposal_id, VOTE_YES, wrap(signer1))
-        .await
-        .expect("scope1 proposal_owner vote");
+    cast_remote_vote_and_get_proposal(
+        &service,
+        &scope1,
+        proposal_1.proposal_id,
+        VOTE_YES,
+        &wrap(signer1),
+    )
+    .await
+    .expect("scope1 proposal_owner vote");
 
     let proposal_2 = service
         .create_proposal_with_config(
@@ -198,10 +254,15 @@ async fn test_multi_scope_isolation() {
         .await
         .expect("scope2 proposal");
 
-    service
-        .cast_vote_and_get_proposal(&scope2, proposal_2.proposal_id, VOTE_YES, wrap(signer2))
-        .await
-        .expect("scope2 proposal_owner vote");
+    cast_remote_vote_and_get_proposal(
+        &service,
+        &scope2,
+        proposal_2.proposal_id,
+        VOTE_YES,
+        &wrap(signer2),
+    )
+    .await
+    .expect("scope2 proposal_owner vote");
 
     {
         let active = service
@@ -231,7 +292,7 @@ async fn test_multi_scope_isolation() {
 
 #[tokio::test]
 async fn test_consensus_threshold_emits_event() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
@@ -253,17 +314,27 @@ async fn test_consensus_threshold_emits_event() {
         .await
         .expect("proposal should be created");
 
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
-        .await
-        .expect("proposal_owner vote");
+    cast_remote_vote(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner),
+    )
+    .await
+    .expect("proposal_owner vote");
 
     for _ in 0..3 {
         let signer = PrivateKeySigner::random();
-        service
-            .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(signer))
-            .await
-            .expect("additional vote");
+        cast_remote_vote(
+            &service,
+            &scope,
+            proposal.proposal_id,
+            VOTE_YES,
+            &wrap(signer),
+        )
+        .await
+        .expect("additional vote");
     }
 
     let proposal_id = proposal.proposal_id;
@@ -291,7 +362,7 @@ async fn test_consensus_threshold_emits_event() {
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_already_reached() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -342,7 +413,7 @@ async fn test_handle_consensus_timeout_already_reached() {
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_reaches_consensus() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
@@ -413,7 +484,7 @@ async fn test_handle_consensus_timeout_reaches_consensus() {
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_reaches_no_consensus_with_multiple_votes() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
 
@@ -492,7 +563,7 @@ async fn test_handle_consensus_timeout_reaches_no_consensus_with_multiple_votes(
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_resolves_with_liveness_yes() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
@@ -560,7 +631,7 @@ async fn test_handle_consensus_timeout_resolves_with_liveness_yes() {
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_insufficient_votes() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
@@ -654,7 +725,7 @@ async fn test_handle_consensus_timeout_insufficient_votes() {
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_no_votes_liveness_true() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
@@ -703,7 +774,7 @@ async fn test_handle_consensus_timeout_no_votes_liveness_true() {
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_no_votes_liveness_false() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
@@ -752,7 +823,7 @@ async fn test_handle_consensus_timeout_no_votes_liveness_false() {
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_reaches_consensus_p2p() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from("scope_p2p_reaches_consensus");
     let proposal_owner = PrivateKeySigner::random();
@@ -819,7 +890,7 @@ async fn test_handle_consensus_timeout_reaches_consensus_p2p() {
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_insufficient_votes_p2p() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from("scope_p2p_insufficient_votes");
     let proposal_owner = PrivateKeySigner::random();
@@ -888,9 +959,12 @@ async fn test_handle_consensus_timeout_insufficient_votes_p2p() {
 
 #[tokio::test]
 async fn test_cast_vote_rejects_same_voter_twice() {
-    let service = DefaultConsensusService::default();
-    let scope = ScopeID::from(SCOPE1_NAME);
+    // Service-side dedup: cast_vote pre-checks the held signer's identity
+    // against the session's votes map and returns UserAlreadyVoted.
     let proposal_owner = PrivateKeySigner::random();
+    let signer = wrap(proposal_owner.clone());
+    let service = DefaultConsensusService::new(signer.clone());
+    let scope = ScopeID::from(SCOPE1_NAME);
 
     let proposal = service
         .create_proposal_with_config(
@@ -910,17 +984,12 @@ async fn test_cast_vote_rejects_same_voter_twice() {
         .expect("proposal should be created");
 
     service
-        .cast_vote(
-            &scope,
-            proposal.proposal_id,
-            VOTE_YES,
-            wrap(proposal_owner.clone()),
-        )
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES)
         .await
         .expect("first vote should succeed");
 
     let err = service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES)
         .await
         .expect_err("second vote from same voter should fail");
 
@@ -932,7 +1001,7 @@ async fn test_cast_vote_rejects_same_voter_twice() {
 
 #[tokio::test]
 async fn test_process_incoming_proposal_rejects_duplicate_proposal() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -966,7 +1035,7 @@ async fn test_process_incoming_proposal_rejects_duplicate_proposal() {
 
 #[tokio::test]
 async fn test_process_incoming_vote_rejects_unknown_session() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
 
     let proposal_owner = PrivateKeySigner::random();
@@ -989,15 +1058,15 @@ async fn test_process_incoming_vote_rejects_unknown_session() {
 
     let unknown_proposal_id = proposal.proposal_id.wrapping_add(1);
     let vote_owner = PrivateKeySigner::random();
-    let vote = service
-        .cast_vote(
-            &scope,
-            proposal.proposal_id,
-            VOTE_YES,
-            wrap(vote_owner.clone()),
-        )
-        .await
-        .expect("valid signed vote");
+    let vote = cast_remote_vote(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(vote_owner.clone()),
+    )
+    .await
+    .expect("valid signed vote");
 
     let mut invalid_vote = vote;
     invalid_vote.proposal_id = unknown_proposal_id;
@@ -1024,7 +1093,7 @@ async fn test_process_incoming_vote_rejects_unknown_session() {
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_rejects_unknown_session() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
 
     let err = service
@@ -1040,7 +1109,7 @@ async fn test_handle_consensus_timeout_rejects_unknown_session() {
 
 #[tokio::test]
 async fn test_process_incoming_proposal_rejects_expired_proposal() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -1070,7 +1139,7 @@ async fn test_process_incoming_proposal_rejects_expired_proposal() {
 
 #[tokio::test]
 async fn test_process_incoming_vote_rejects_invalid_vote_hash() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -1091,13 +1160,18 @@ async fn test_process_incoming_vote_rejects_invalid_vote_hash() {
         .await
         .expect("proposal should be created");
 
-    let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
-        .await
-        .expect("first vote should succeed");
+    let proposal = cast_remote_vote_and_get_proposal(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner),
+    )
+    .await
+    .expect("first vote should succeed");
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, wrap(voter))
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter))
         .await
         .expect("valid vote should be built");
     vote.vote_hash = vec![1; 32];
@@ -1115,7 +1189,7 @@ async fn test_process_incoming_vote_rejects_invalid_vote_hash() {
 
 #[tokio::test]
 async fn test_process_incoming_vote_rejects_invalid_vote_signature() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -1136,18 +1210,18 @@ async fn test_process_incoming_vote_rejects_invalid_vote_signature() {
         .await
         .expect("proposal should be created");
 
-    let proposal = service
-        .cast_vote_and_get_proposal(
-            &scope,
-            proposal.proposal_id,
-            VOTE_YES,
-            wrap(proposal_owner.clone()),
-        )
-        .await
-        .expect("first vote should succeed");
+    let proposal = cast_remote_vote_and_get_proposal(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner.clone()),
+    )
+    .await
+    .expect("first vote should succeed");
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, wrap(voter))
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter))
         .await
         .expect("valid vote should be built");
     let wrong_signer = PrivateKeySigner::random();
@@ -1171,7 +1245,7 @@ async fn test_process_incoming_vote_rejects_invalid_vote_signature() {
 
 #[tokio::test]
 async fn test_process_incoming_vote_rejects_duplicate_vote_owner() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -1192,17 +1266,17 @@ async fn test_process_incoming_vote_rejects_duplicate_vote_owner() {
         .await
         .expect("proposal should be created");
 
-    let proposal = service
-        .cast_vote_and_get_proposal(
-            &scope,
-            proposal.proposal_id,
-            VOTE_YES,
-            wrap(proposal_owner.clone()),
-        )
-        .await
-        .expect("first owner vote should succeed");
+    let proposal = cast_remote_vote_and_get_proposal(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner.clone()),
+    )
+    .await
+    .expect("first owner vote should succeed");
 
-    let duplicate_vote = build_vote(&proposal, VOTE_YES, wrap(proposal_owner))
+    let duplicate_vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner))
         .await
         .expect("duplicate vote should be signable");
 
@@ -1219,7 +1293,7 @@ async fn test_process_incoming_vote_rejects_duplicate_vote_owner() {
 
 #[tokio::test]
 async fn test_process_incoming_vote_rejects_expired_vote_timestamp() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -1240,13 +1314,18 @@ async fn test_process_incoming_vote_rejects_expired_vote_timestamp() {
         .await
         .expect("proposal should be created");
 
-    let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
-        .await
-        .expect("first vote should succeed");
+    let proposal = cast_remote_vote_and_get_proposal(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner),
+    )
+    .await
+    .expect("first vote should succeed");
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, wrap(voter.clone()))
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter.clone()))
         .await
         .expect("valid vote should be built");
     vote.timestamp = proposal.expiration_timestamp.saturating_add(1);
@@ -1273,7 +1352,7 @@ async fn test_process_incoming_vote_rejects_expired_vote_timestamp() {
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_is_idempotent_for_failed_session() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -1295,16 +1374,26 @@ async fn test_handle_consensus_timeout_is_idempotent_for_failed_session() {
         .await
         .expect("proposal should be created");
 
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
-        .await
-        .expect("first vote should succeed");
+    cast_remote_vote(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner),
+    )
+    .await
+    .expect("first vote should succeed");
 
     let voter2 = PrivateKeySigner::random();
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(voter2))
-        .await
-        .expect("second vote should succeed");
+    cast_remote_vote(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(voter2),
+    )
+    .await
+    .expect("second vote should succeed");
 
     let err_first = service
         .handle_consensus_timeout(&scope, proposal.proposal_id)
@@ -1333,7 +1422,7 @@ async fn test_handle_consensus_timeout_is_idempotent_for_failed_session() {
 
 #[tokio::test]
 async fn test_handle_consensus_timeout_rejects_unknown_scope() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let unknown_scope = ScopeID::from("unknown_scope");
 
     let err = service
@@ -1349,7 +1438,7 @@ async fn test_handle_consensus_timeout_rejects_unknown_scope() {
 
 #[tokio::test]
 async fn test_cast_vote_still_active_does_not_emit_consensus_event() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let mut events = service.event_bus().subscribe();
     let scope = ScopeID::from("still_active_no_event_scope");
     let proposal_owner = PrivateKeySigner::random();
@@ -1365,10 +1454,15 @@ async fn test_cast_vote_still_active_does_not_emit_consensus_event() {
     .await;
 
     // One vote is insufficient for n=4; transition should remain StillActive.
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
-        .await
-        .expect("vote should succeed");
+    cast_remote_vote(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner),
+    )
+    .await
+    .expect("vote should succeed");
 
     let no_event = timeout(Duration::from_millis(150), events.recv()).await;
     assert!(
@@ -1380,7 +1474,7 @@ async fn test_cast_vote_still_active_does_not_emit_consensus_event() {
 #[tokio::test]
 async fn test_process_incoming_proposal_resolve_config_uses_base_timeout_when_expiration_not_after_timestamp()
  {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from("resolve_config_base_timeout_scope");
 
     let request = CreateProposalRequest::new(
@@ -1429,7 +1523,7 @@ async fn test_process_incoming_proposal_resolve_config_uses_base_timeout_when_ex
 
 #[tokio::test]
 async fn test_get_reached_proposals_with_consensus() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -1452,10 +1546,15 @@ async fn test_get_reached_proposals_with_consensus() {
         .expect("proposal should be created");
 
     // Cast vote to reach consensus
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
-        .await
-        .expect("vote should succeed");
+    cast_remote_vote(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner),
+    )
+    .await
+    .expect("vote should succeed");
 
     // Get reached proposals
     let reached_map = service
@@ -1482,7 +1581,7 @@ async fn test_get_reached_proposals_with_consensus() {
 
 #[tokio::test]
 async fn test_get_reached_proposals_no_consensus() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -1521,7 +1620,7 @@ async fn test_get_reached_proposals_no_consensus() {
 
 #[tokio::test]
 async fn test_get_reached_proposals_mixed_states() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE1_NAME);
     let proposal_owner1 = PrivateKeySigner::random();
     let proposal_owner2 = PrivateKeySigner::random();
@@ -1545,10 +1644,15 @@ async fn test_get_reached_proposals_mixed_states() {
         .await
         .expect("proposal should be created");
 
-    service
-        .cast_vote(&scope, proposal1.proposal_id, true, wrap(proposal_owner1))
-        .await
-        .expect("vote should succeed");
+    cast_remote_vote(
+        &service,
+        &scope,
+        proposal1.proposal_id,
+        true,
+        &wrap(proposal_owner1),
+    )
+    .await
+    .expect("vote should succeed");
 
     // Create proposal 2 that reaches consensus (NO)
     let proposal2 = service
@@ -1568,10 +1672,15 @@ async fn test_get_reached_proposals_mixed_states() {
         .await
         .expect("proposal should be created");
 
-    service
-        .cast_vote(&scope, proposal2.proposal_id, false, wrap(proposal_owner2))
-        .await
-        .expect("vote should succeed");
+    cast_remote_vote(
+        &service,
+        &scope,
+        proposal2.proposal_id,
+        false,
+        &wrap(proposal_owner2),
+    )
+    .await
+    .expect("vote should succeed");
 
     // Create proposal 3 that remains active (doesn't reach consensus)
     let proposal3 = service
@@ -1631,7 +1740,7 @@ async fn test_get_reached_proposals_mixed_states() {
 
 #[tokio::test]
 async fn test_get_reached_proposals_nonexistent_scope() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let nonexistent_scope = ScopeID::from("nonexistent");
 
     // Get reached proposals for non-existent scope
@@ -1649,7 +1758,7 @@ async fn test_get_reached_proposals_nonexistent_scope() {
 
 #[tokio::test]
 async fn test_unknown_scope_queries_stats_and_active_proposals() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let unknown_scope = ScopeID::from("unknown_scope");
 
     let stats = service.get_scope_stats(&unknown_scope).await;
@@ -1683,7 +1792,7 @@ async fn test_unknown_scope_queries_stats_and_active_proposals() {
 
 #[tokio::test]
 async fn test_delete_scope_cleans_up_all_state() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from("delete_scope_test");
     let proposal_owner = PrivateKeySigner::random();
 
@@ -1698,10 +1807,15 @@ async fn test_delete_scope_cleans_up_all_state() {
     )
     .await;
 
-    service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
-        .await
-        .expect("vote should succeed");
+    cast_remote_vote(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner),
+    )
+    .await
+    .expect("vote should succeed");
 
     // Verify state exists
     let consensus_result = service
@@ -1771,10 +1885,15 @@ async fn test_delete_scope_cleans_up_all_state() {
     )
     .await;
 
-    service
-        .cast_vote(&scope, new_proposal.proposal_id, VOTE_YES, wrap(new_owner))
-        .await
-        .expect("vote on new proposal should succeed");
+    cast_remote_vote(
+        &service,
+        &scope,
+        new_proposal.proposal_id,
+        VOTE_YES,
+        &wrap(new_owner),
+    )
+    .await
+    .expect("vote on new proposal should succeed");
 
     let new_result = service
         .storage()
@@ -1786,7 +1905,7 @@ async fn test_delete_scope_cleans_up_all_state() {
 
 #[tokio::test]
 async fn test_delete_scope_on_unknown_scope_is_ok() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let unknown_scope = ScopeID::from("never_existed");
 
     // Deleting a scope that was never created should not error

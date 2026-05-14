@@ -15,6 +15,7 @@ use hashgraph_like_consensus::{
     signing::{ConsensusSchemeError, ConsensusSignatureScheme},
     storage::{ConsensusStorage, InMemoryConsensusStorage},
     types::CreateProposalRequest,
+    utils::build_vote,
 };
 use sha2::{Digest, Sha256};
 
@@ -74,26 +75,32 @@ type StubService = ConsensusService<
     StubSigner,
 >;
 
+/// Build a per-peer service sharing storage and event bus.
+fn peer_service(
+    storage: &InMemoryConsensusStorage<ScopeID>,
+    bus: &BroadcastEventBus<ScopeID>,
+    signer: StubSigner,
+) -> StubService {
+    StubService::new_with_components(storage.clone(), bus.clone(), signer, 10)
+}
+
 #[tokio::test]
 async fn stub_scheme_reaches_consensus_without_ethereum_types() {
-    let service: StubService = StubService::new_with_components(
-        InMemoryConsensusStorage::new(),
-        BroadcastEventBus::default(),
-        10,
-    );
+    let storage = InMemoryConsensusStorage::<ScopeID>::new();
+    let bus = BroadcastEventBus::<ScopeID>::default();
     let scope = ScopeID::from("stub-scope");
 
-    let owner = StubSigner::new([1; STUB_IDENTITY_LEN]);
-    let voter_two = StubSigner::new([2; STUB_IDENTITY_LEN]);
-    let voter_three = StubSigner::new([3; STUB_IDENTITY_LEN]);
+    let owner = peer_service(&storage, &bus, StubSigner::new([1; STUB_IDENTITY_LEN]));
+    let voter_two = peer_service(&storage, &bus, StubSigner::new([2; STUB_IDENTITY_LEN]));
+    let voter_three = peer_service(&storage, &bus, StubSigner::new([3; STUB_IDENTITY_LEN]));
 
-    let proposal = service
+    let proposal = owner
         .create_proposal_with_config(
             &scope,
             CreateProposalRequest::new(
                 "stub-proposal".into(),
                 b"payload".to_vec(),
-                owner.identity().to_vec(),
+                owner.signer().identity().to_vec(),
                 3,
                 60,
                 true,
@@ -104,20 +111,20 @@ async fn stub_scheme_reaches_consensus_without_ethereum_types() {
         .await
         .expect("proposal should be created");
 
-    service
-        .cast_vote(&scope, proposal.proposal_id, true, owner)
+    owner
+        .cast_vote(&scope, proposal.proposal_id, true)
         .await
         .expect("owner vote");
-    service
-        .cast_vote(&scope, proposal.proposal_id, true, voter_two)
+    voter_two
+        .cast_vote(&scope, proposal.proposal_id, true)
         .await
         .expect("voter two");
-    service
-        .cast_vote(&scope, proposal.proposal_id, true, voter_three)
+    voter_three
+        .cast_vote(&scope, proposal.proposal_id, true)
         .await
         .expect("voter three");
 
-    let session = service
+    let session = owner
         .storage()
         .get_session(&scope, proposal.proposal_id)
         .await
@@ -131,23 +138,20 @@ async fn stub_scheme_reaches_consensus_without_ethereum_types() {
 
 #[tokio::test]
 async fn stub_scheme_rejects_forged_signature() {
-    let service: StubService = StubService::new_with_components(
-        InMemoryConsensusStorage::new(),
-        BroadcastEventBus::default(),
-        10,
-    );
+    let storage = InMemoryConsensusStorage::<ScopeID>::new();
+    let bus = BroadcastEventBus::<ScopeID>::default();
     let scope = ScopeID::from("stub-scope-forge");
 
-    let owner = StubSigner::new([9; STUB_IDENTITY_LEN]);
+    let owner = peer_service(&storage, &bus, StubSigner::new([9; STUB_IDENTITY_LEN]));
     let voter = StubSigner::new([10; STUB_IDENTITY_LEN]);
 
-    let proposal = service
+    let proposal = owner
         .create_proposal_with_config(
             &scope,
             CreateProposalRequest::new(
                 "stub-proposal".into(),
                 b"payload".to_vec(),
-                owner.identity().to_vec(),
+                owner.signer().identity().to_vec(),
                 2,
                 60,
                 true,
@@ -158,13 +162,11 @@ async fn stub_scheme_rejects_forged_signature() {
         .await
         .expect("proposal should be created");
 
-    let mut vote = hashgraph_like_consensus::utils::build_vote(&proposal, true, voter.clone())
-        .await
-        .expect("vote");
+    let mut vote = build_vote(&proposal, true, &voter).await.expect("vote");
     // Tamper with the signature so verify() returns false.
     vote.signature.iter_mut().for_each(|b| *b ^= 0xFF);
 
-    let err = service
+    let err = owner
         .process_incoming_vote(&scope, vote)
         .await
         .expect_err("forged signature must be rejected");

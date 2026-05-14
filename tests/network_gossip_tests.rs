@@ -4,8 +4,28 @@ use tokio::time::{Duration, sleep};
 use hashgraph_like_consensus::{
     error::ConsensusError, scope::ScopeID, service::DefaultConsensusService,
     session::ConsensusConfig, signing::EthereumConsensusSigner, storage::ConsensusStorage,
-    types::CreateProposalRequest,
+    types::CreateProposalRequest, utils::build_vote,
 };
+
+async fn cast_remote_vote(
+    service: &DefaultConsensusService,
+    scope: &ScopeID,
+    proposal_id: u32,
+    choice: bool,
+    signer: &EthereumConsensusSigner,
+) -> Result<
+    hashgraph_like_consensus::protos::consensus::v1::Vote,
+    hashgraph_like_consensus::error::ConsensusError,
+> {
+    let proposal = service.storage().get_proposal(scope, proposal_id).await?;
+    let vote = build_vote(&proposal, choice, signer).await?;
+    service.process_incoming_vote(scope, vote.clone()).await?;
+    Ok(vote)
+}
+
+fn make_service() -> DefaultConsensusService {
+    DefaultConsensusService::new(EthereumConsensusSigner::new(PrivateKeySigner::random()))
+}
 
 fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
     EthereumConsensusSigner::new(signer)
@@ -24,8 +44,8 @@ fn owner_bytes(signer: &PrivateKeySigner) -> Vec<u8> {
 /// gossip votes back/forth, and both peers converge to Ok(true) consensus result.
 #[tokio::test]
 async fn test_two_peers_gossip_reaches_unanimous_yes_for_n2() {
-    let peer_a = DefaultConsensusService::default();
-    let peer_b = DefaultConsensusService::default();
+    let peer_a = make_service();
+    let peer_b = make_service();
     let scope = ScopeID::from(SCOPE);
 
     let owner_a = PrivateKeySigner::random();
@@ -53,8 +73,7 @@ async fn test_two_peers_gossip_reaches_unanimous_yes_for_n2() {
         .expect("peer_b accepts proposal");
 
     // Peer A votes YES, gossip vote to peer B.
-    let vote_a = peer_a
-        .cast_vote(&scope, proposal.proposal_id, true, wrap(owner_a))
+    let vote_a = cast_remote_vote(&peer_a, &scope, proposal.proposal_id, true, &wrap(owner_a))
         .await
         .expect("peer_a vote");
     peer_b
@@ -64,8 +83,7 @@ async fn test_two_peers_gossip_reaches_unanimous_yes_for_n2() {
 
     // Peer B votes YES, gossip vote to peer A.
     let owner_b = PrivateKeySigner::random();
-    let vote_b = peer_b
-        .cast_vote(&scope, proposal.proposal_id, true, wrap(owner_b))
+    let vote_b = cast_remote_vote(&peer_b, &scope, proposal.proposal_id, true, &wrap(owner_b))
         .await
         .expect("peer_b vote");
     peer_a
@@ -93,9 +111,9 @@ async fn test_two_peers_gossip_reaches_unanimous_yes_for_n2() {
 /// but still converges to the same YES result.
 #[tokio::test]
 async fn test_three_peers_gossip_converges_with_out_of_order_delivery() {
-    let peer_a = DefaultConsensusService::default();
-    let peer_b = DefaultConsensusService::default();
-    let peer_c = DefaultConsensusService::default();
+    let peer_a = make_service();
+    let peer_b = make_service();
+    let peer_c = make_service();
     let scope = ScopeID::from(format!("{SCOPE}_3p"));
 
     let owner_a = PrivateKeySigner::random();
@@ -127,13 +145,11 @@ async fn test_three_peers_gossip_converges_with_out_of_order_delivery() {
         .expect("peer_c accepts proposal");
 
     // Two YES votes are sufficient for n=3 with threshold 2/3 and majority YES.
-    let vote_a = peer_a
-        .cast_vote(&scope, proposal.proposal_id, true, wrap(owner_a))
+    let vote_a = cast_remote_vote(&peer_a, &scope, proposal.proposal_id, true, &wrap(owner_a))
         .await
         .expect("peer_a vote");
     let owner_b = PrivateKeySigner::random();
-    let vote_b = peer_b
-        .cast_vote(&scope, proposal.proposal_id, true, wrap(owner_b))
+    let vote_b = cast_remote_vote(&peer_b, &scope, proposal.proposal_id, true, &wrap(owner_b))
         .await
         .expect("peer_b vote");
 
@@ -184,9 +200,9 @@ async fn test_three_peers_gossip_converges_with_out_of_order_delivery() {
 /// resulting in a 2 YES / 2 NO tie → no consensus.
 #[tokio::test]
 async fn test_multi_peer_timeout_task_converges_to_failed() {
-    let peer_a = DefaultConsensusService::default();
-    let peer_b = DefaultConsensusService::default();
-    let peer_c = DefaultConsensusService::default();
+    let peer_a = make_service();
+    let peer_b = make_service();
+    let peer_c = make_service();
     let scope = ScopeID::from(format!("{SCOPE}_timeout"));
 
     // n=4, liveness=false, 2 YES votes → 2 YES + 2 silent(NO) = tied → fail.
@@ -219,8 +235,7 @@ async fn test_multi_peer_timeout_task_converges_to_failed() {
         .expect("peer_c accepts proposal");
 
     // 2 YES votes total.
-    let vote_a = peer_a
-        .cast_vote(&scope, proposal.proposal_id, true, wrap(owner_a))
+    let vote_a = cast_remote_vote(&peer_a, &scope, proposal.proposal_id, true, &wrap(owner_a))
         .await
         .expect("peer_a vote");
     peer_b
@@ -232,8 +247,7 @@ async fn test_multi_peer_timeout_task_converges_to_failed() {
         .await
         .expect("peer_c accepts vote_a");
 
-    let vote_b = peer_b
-        .cast_vote(&scope, proposal.proposal_id, true, wrap(voter_b))
+    let vote_b = cast_remote_vote(&peer_b, &scope, proposal.proposal_id, true, &wrap(voter_b))
         .await
         .expect("peer_b vote");
     peer_a
@@ -309,10 +323,10 @@ async fn test_multi_peer_timeout_task_converges_to_failed() {
 /// Result depends on the liveness criteria as we have 2 YES and 2 NO votes.
 #[tokio::test]
 async fn test_multi_peer_timeout_task_resolves_tie_by_liveness_criteria_yes() {
-    let peer_a = DefaultConsensusService::default();
-    let peer_b = DefaultConsensusService::default();
-    let peer_c = DefaultConsensusService::default();
-    let peer_d = DefaultConsensusService::default();
+    let peer_a = make_service();
+    let peer_b = make_service();
+    let peer_c = make_service();
+    let peer_d = make_service();
     let scope = ScopeID::from(format!("{SCOPE}_timeout_tie"));
 
     // n=4, votes: 2 YES / 2 NO => tie. With liveness_criteria_yes=true, resolve to YES.
@@ -342,8 +356,7 @@ async fn test_multi_peer_timeout_task_resolves_tie_by_liveness_criteria_yes() {
 
     // Cast votes sequentially, gossiping each vote to all peers before the next voter votes,
     // so that received_hash references match on every peer.
-    let vote_a = peer_a
-        .cast_vote(&scope, proposal.proposal_id, true, wrap(owner_a))
+    let vote_a = cast_remote_vote(&peer_a, &scope, proposal.proposal_id, true, &wrap(owner_a))
         .await
         .expect("vote_a");
     for peer in [&peer_b, &peer_c, &peer_d] {
@@ -353,8 +366,7 @@ async fn test_multi_peer_timeout_task_resolves_tie_by_liveness_criteria_yes() {
     }
 
     let voter_b = PrivateKeySigner::random();
-    let vote_b = peer_b
-        .cast_vote(&scope, proposal.proposal_id, true, wrap(voter_b))
+    let vote_b = cast_remote_vote(&peer_b, &scope, proposal.proposal_id, true, &wrap(voter_b))
         .await
         .expect("vote_b");
     for peer in [&peer_a, &peer_c, &peer_d] {
@@ -364,8 +376,7 @@ async fn test_multi_peer_timeout_task_resolves_tie_by_liveness_criteria_yes() {
     }
 
     let voter_c = PrivateKeySigner::random();
-    let vote_c = peer_c
-        .cast_vote(&scope, proposal.proposal_id, false, wrap(voter_c))
+    let vote_c = cast_remote_vote(&peer_c, &scope, proposal.proposal_id, false, &wrap(voter_c))
         .await
         .expect("vote_c");
     for peer in [&peer_a, &peer_b, &peer_d] {
@@ -375,8 +386,7 @@ async fn test_multi_peer_timeout_task_resolves_tie_by_liveness_criteria_yes() {
     }
 
     let voter_d = PrivateKeySigner::random();
-    let vote_d = peer_d
-        .cast_vote(&scope, proposal.proposal_id, false, wrap(voter_d))
+    let vote_d = cast_remote_vote(&peer_d, &scope, proposal.proposal_id, false, &wrap(voter_d))
         .await
         .expect("vote_d");
     for peer in [&peer_a, &peer_b, &peer_c] {

@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.4.0
+
+**Breaking** — `ConsensusService` now holds its peer's signer instead of
+taking one per call. `cast_vote` and friends drop the signer parameter.
+
+### Changed
+
+- `ConsensusService<Scope, Storage, Event, Signer>` now stores a `Signer`
+  instance (previously `PhantomData<fn() -> Signer>`). The signer represents
+  this peer's identity for the lifetime of the service; storage, event bus,
+  and signer are all peer-scoped held state.
+- `ConsensusSignatureScheme` now requires `Clone + Send + Sync + 'static`,
+  matching `ConsensusStorage` and `ConsensusEventBus`.
+- `cast_vote` and `cast_vote_and_get_proposal` drop the `signer` parameter
+  and use the service's held signer:
+  ```rust
+  // before
+  service.cast_vote(&scope, id, choice, signer).await?;
+  // after
+  service.cast_vote(&scope, id, choice).await?;
+  ```
+- `ConsensusService::new_with_components` now takes the signer:
+  `new_with_components(storage, event_bus, signer, max_sessions_per_scope)`.
+- `DefaultConsensusService::new(signer)` and
+  `new_with_max_sessions(signer, max)` require a signer. `Default::default()`
+  is removed (no sensible identity to fabricate).
+- `utils::build_vote` now takes `signer: &Signer` (was by value).
+
+### Added
+
+- `ConsensusService::signer(&self) -> &Signer` accessor, mirroring
+  `storage()` and `event_bus()`.
+
+### Migration
+
+```rust
+// before
+let service = DefaultConsensusService::default();
+service.cast_vote(&scope, id, true, signer).await?;
+
+// after
+let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
+let service = DefaultConsensusService::new(signer);
+service.cast_vote(&scope, id, true).await?;
+```
+
+For multi-peer setups (one process simulating many identities), construct
+one `ConsensusService` per peer with shared storage and (optionally) a
+shared event bus — see the README "Service shape" section.
+
 ## 0.3.0
 
 **Breaking** — the crate is no longer hard-coded to Ethereum signing.

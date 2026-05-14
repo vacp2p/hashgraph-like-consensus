@@ -37,7 +37,13 @@ pub use ethereum::EthereumConsensusSigner;
 ///
 /// All peers on a network must agree on the scheme, since they all verify
 /// each other's signatures using the same `verify` rule.
-pub trait ConsensusSignatureScheme: Send + Sync {
+///
+/// The trait inherits `Clone + Send + Sync + 'static` to mirror the
+/// [`ConsensusStorage`](crate::storage::ConsensusStorage) and
+/// [`ConsensusEventBus`](crate::events::ConsensusEventBus) traits — the
+/// [`ConsensusService`](crate::service::ConsensusService) holds an instance
+/// for the lifetime of the service and clones it when the service is cloned.
+pub trait ConsensusSignatureScheme: Clone + Send + Sync + 'static {
     /// Stable identity bytes for this signer (e.g. address, public key, account id).
     ///
     /// Written into [`Vote::vote_owner`] when the signer casts a vote and

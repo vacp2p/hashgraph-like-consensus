@@ -3,14 +3,27 @@ use futures::future::join_all;
 use std::{sync::Arc, time::Duration};
 use tokio::{spawn, sync::Barrier, time::sleep};
 
-use hashgraph_like_consensus::signing::EthereumConsensusSigner;
 use hashgraph_like_consensus::{
-    error::ConsensusError, scope::ScopeID, service::DefaultConsensusService,
-    session::ConsensusConfig, storage::ConsensusStorage, types::CreateProposalRequest,
+    error::ConsensusError,
+    events::BroadcastEventBus,
+    scope::ScopeID,
+    service::{ConsensusService, DefaultConsensusService},
+    session::ConsensusConfig,
+    signing::{ConsensusSignatureScheme, EthereumConsensusSigner},
+    storage::{ConsensusStorage, InMemoryConsensusStorage},
+    types::CreateProposalRequest,
 };
 
 fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
     EthereumConsensusSigner::new(signer)
+}
+
+fn peer_service(
+    storage: &InMemoryConsensusStorage<ScopeID>,
+    bus: &BroadcastEventBus<ScopeID>,
+    signer: EthereumConsensusSigner,
+) -> DefaultConsensusService {
+    ConsensusService::new_with_components(storage.clone(), bus.clone(), signer, 10)
 }
 
 const SCOPE: &str = "concurrency_scope";
@@ -26,26 +39,24 @@ const EXPECTED_VOTERS_COUNT_5: u32 = 5;
 
 const EXPECTED_PROPOSALS_COUNT_5: u32 = 5;
 
-fn owner_bytes(signer: &PrivateKeySigner) -> Vec<u8> {
-    signer.address().as_slice().to_vec()
-}
-
 // Verifies 10 parallel votes succeed under gossipsub and reach consensus;
 #[tokio::test]
 async fn test_concurrent_vote_casting() {
-    let service = Arc::new(DefaultConsensusService::default());
+    let storage = InMemoryConsensusStorage::<ScopeID>::new();
+    let bus = BroadcastEventBus::<ScopeID>::default();
     let scope = ScopeID::from(SCOPE);
-    let proposal_owner = PrivateKeySigner::random();
+
+    let owner = peer_service(&storage, &bus, wrap(PrivateKeySigner::random()));
 
     // Use gossipsub mode (default) to allow all 10 votes in round 2
     // P2P mode would limit to ceil(2*10/3) = 7 votes, but we need 10 votes for this test
-    let proposal = service
+    let proposal = owner
         .create_proposal_with_config(
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
                 PROPOSAL_PAYLOAD,
-                owner_bytes(&proposal_owner),
+                owner.signer().identity().to_vec(),
                 EXPECTED_VOTERS_COUNT_10,
                 EXPIRATION,
                 true,
@@ -59,17 +70,17 @@ async fn test_concurrent_vote_casting() {
     let proposal_id = proposal.proposal_id;
     let barrier = Arc::new(Barrier::new(EXPECTED_VOTERS_COUNT_10 as usize));
 
+    // Each concurrent peer has its own service sharing storage + bus.
     let mut handles = Vec::new();
     for i in 0..EXPECTED_VOTERS_COUNT_10 {
-        let service_clone = Arc::clone(&service);
+        let storage = storage.clone();
+        let bus = bus.clone();
         let scope_clone = scope.clone();
         let barrier_clone = Arc::clone(&barrier);
         let handle = spawn(async move {
             barrier_clone.wait().await;
-            let voter = PrivateKeySigner::random();
-            service_clone
-                .cast_vote(&scope_clone, proposal_id, i % 2 == 0, wrap(voter))
-                .await
+            let peer = peer_service(&storage, &bus, wrap(PrivateKeySigner::random()));
+            peer.cast_vote(&scope_clone, proposal_id, i % 2 == 0).await
         });
         handles.push(handle);
     }
@@ -79,7 +90,7 @@ async fn test_concurrent_vote_casting() {
     assert_eq!(success_count, 10, "All 10 unique votes should succeed");
 
     sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
-    let result = service
+    let result = owner
         .storage()
         .get_consensus_result(&scope, proposal_id)
         .await;
@@ -92,22 +103,24 @@ async fn test_concurrent_vote_casting() {
 // Test concurrent proposal creation and vote processing
 #[tokio::test]
 async fn test_concurrent_proposal_operations() {
-    let service = Arc::new(DefaultConsensusService::default());
+    let storage = InMemoryConsensusStorage::<ScopeID>::new();
+    let bus = BroadcastEventBus::<ScopeID>::default();
     let scope = ScopeID::from(SCOPE);
 
     let mut handles = Vec::new();
     for i in 0..EXPECTED_PROPOSALS_COUNT_5 {
-        let service_clone = Arc::clone(&service);
+        let storage = storage.clone();
+        let bus = bus.clone();
         let scope_clone = scope.clone();
         let handle = spawn(async move {
-            let proposal_owner = PrivateKeySigner::random();
-            service_clone
+            let proposal_owner = peer_service(&storage, &bus, wrap(PrivateKeySigner::random()));
+            proposal_owner
                 .create_proposal_with_config(
                     &scope_clone,
                     CreateProposalRequest::new(
                         format!("Proposal {i}"),
                         PROPOSAL_PAYLOAD,
-                        owner_bytes(&proposal_owner),
+                        proposal_owner.signer().identity().to_vec(),
                         EXPECTED_VOTERS_COUNT_3,
                         EXPIRATION,
                         true,
@@ -134,18 +147,22 @@ async fn test_concurrent_proposal_operations() {
 // Test that duplicate votes are properly rejected
 #[tokio::test]
 async fn test_concurrent_duplicate_vote_rejection() {
-    let service = Arc::new(DefaultConsensusService::default());
+    let storage = InMemoryConsensusStorage::<ScopeID>::new();
+    let bus = BroadcastEventBus::<ScopeID>::default();
     let scope = ScopeID::from(SCOPE);
-    let proposal_owner = PrivateKeySigner::random();
-    let voter = PrivateKeySigner::random();
 
-    let proposal = service
+    let owner_signer = wrap(PrivateKeySigner::random());
+    let voter_signer = wrap(PrivateKeySigner::random());
+
+    let owner = peer_service(&storage, &bus, owner_signer.clone());
+
+    let proposal = owner
         .create_proposal_with_config(
             &scope,
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
                 PROPOSAL_PAYLOAD,
-                owner_bytes(&proposal_owner),
+                owner_signer.identity().to_vec(),
                 EXPECTED_VOTERS_COUNT_3,
                 EXPIRATION,
                 true,
@@ -158,17 +175,15 @@ async fn test_concurrent_duplicate_vote_rejection() {
 
     let proposal_id = proposal.proposal_id;
 
-    // Try to cast the same vote concurrently multiple times
+    // Many parallel handles all try to cast as the SAME voter. The voter has
+    // one service; the concurrent cast_vote calls go through interior-mutable
+    // storage atomically, so only one should succeed.
+    let voter = Arc::new(peer_service(&storage, &bus, voter_signer.clone()));
     let mut handles = Vec::new();
     for _ in 0..EXPECTED_VOTERS_COUNT_5 {
-        let service_clone = Arc::clone(&service);
+        let voter = Arc::clone(&voter);
         let scope_clone = scope.clone();
-        let voter_clone = voter.clone();
-        let handle = spawn(async move {
-            service_clone
-                .cast_vote(&scope_clone, proposal_id, true, wrap(voter_clone))
-                .await
-        });
+        let handle = spawn(async move { voter.cast_vote(&scope_clone, proposal_id, true).await });
         handles.push(handle);
     }
 
@@ -178,7 +193,7 @@ async fn test_concurrent_duplicate_vote_rejection() {
         .map(|r| r.expect("Task should complete"))
         .collect();
 
-    let voter_address = owner_bytes(&voter);
+    let voter_address = voter_signer.identity().to_vec();
     let successful_votes: Vec<_> = vote_results
         .iter()
         .filter_map(|r| r.as_ref().ok())

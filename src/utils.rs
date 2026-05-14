@@ -57,7 +57,7 @@ pub fn compute_vote_hash(vote: &Vote) -> Vec<u8> {
 pub async fn build_vote<Signer: ConsensusSignatureScheme>(
     proposal: &Proposal,
     user_vote: bool,
-    signer: Signer,
+    signer: &Signer,
 ) -> Result<Vote, ConsensusError> {
     let now = current_timestamp()?;
 
