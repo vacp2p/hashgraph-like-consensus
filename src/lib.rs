@@ -55,6 +55,7 @@
 //! use hashgraph_like_consensus::{
 //!     scope::ScopeID,
 //!     service::DefaultConsensusService,
+//!     signing::{ConsensusSignatureScheme, EthereumConsensusSigner},
 //!     types::CreateProposalRequest,
 //! };
 //! use alloy::signers::local::PrivateKeySigner;
@@ -62,7 +63,7 @@
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let service = DefaultConsensusService::default();
 //! let scope = ScopeID::from("my-scope");
-//! let signer = PrivateKeySigner::random();
+//! let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
 //!
 //! let proposal = service
 //!     .create_proposal(
@@ -70,7 +71,7 @@
 //!         CreateProposalRequest::new(
 //!             "Upgrade contract".into(),
 //!             b"Switch to v2".to_vec(),
-//!             signer.address().as_slice().to_vec(),
+//!             signer.identity().to_vec(),
 //!             3,    // expected voters
 //!             60,   // expiration (seconds from now)
 //!             true, // liveness: silent peers count as YES at timeout
@@ -96,6 +97,7 @@
 //! | [`types`] | Request/event types ([`CreateProposalRequest`](types::CreateProposalRequest), [`ConsensusEvent`](types::ConsensusEvent)) |
 //! | [`storage`] | [`ConsensusStorage`](storage::ConsensusStorage) trait and [`InMemoryConsensusStorage`](storage::InMemoryConsensusStorage) |
 //! | [`events`] | [`ConsensusEventBus`](events::ConsensusEventBus) trait and [`BroadcastEventBus`](events::BroadcastEventBus) |
+//! | [`signing`] | [`ConsensusSignatureScheme`](signing::ConsensusSignatureScheme) trait and the default [`EthereumConsensusSigner`](signing::EthereumConsensusSigner) impl |
 //! | [`error`] | [`ConsensusError`](error::ConsensusError) enum |
 //! | [`utils`] | Low-level validation and hashing helpers |
 
@@ -114,6 +116,7 @@ pub mod scope_config;
 pub mod service;
 pub mod service_stats;
 pub mod session;
+pub mod signing;
 pub mod storage;
 pub mod types;
 pub mod utils;

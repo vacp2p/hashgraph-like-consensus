@@ -4,7 +4,7 @@
 //! configuration validation, vote/proposal validation, session state, and
 //! consensus result categories.
 
-use alloy::primitives::SignatureError;
+use crate::signing::ConsensusSchemeError;
 
 /// Enumerates everything that can go wrong during consensus operations.
 #[derive(Debug, thiserror::Error)]
@@ -48,8 +48,6 @@ pub enum ConsensusError {
     InvalidVoteTimestamp,
     #[error("Vote timestamp is older than creation time")]
     TimestampOlderThanCreationTime,
-    #[error("Mismatched length: expected {expect}, actual {actual}")]
-    MismatchedLength { expect: usize, actual: usize },
 
     // Session/State Errors
     #[error("Session not active")]
@@ -71,10 +69,8 @@ pub enum ConsensusError {
     #[error("Consensus failed")]
     ConsensusFailed,
 
-    #[error("Invalid signature: {0}")]
-    InvalidSignature(#[from] SignatureError),
-    #[error("Failed to sign message: {0}")]
-    FailedToSignMessage(#[from] alloy_signer::Error),
+    #[error("Signature scheme failure: {0}")]
+    SignatureScheme(#[from] ConsensusSchemeError),
     #[error("Failed to get current time")]
     FailedToGetCurrentTime(#[from] std::time::SystemTimeError),
 }

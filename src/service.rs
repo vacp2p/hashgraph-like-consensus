@@ -1,6 +1,5 @@
 use std::marker::PhantomData;
 
-use alloy_signer::Signer;
 use tokio::time::Duration;
 
 use crate::{
@@ -10,6 +9,7 @@ use crate::{
     scope::{ConsensusScope, ScopeID},
     scope_config::{NetworkType, ScopeConfig, ScopeConfigBuilder},
     session::{ConsensusConfig, ConsensusSession, ConsensusState},
+    signing::{ConsensusSignatureScheme, EthereumConsensusSigner},
     storage::{ConsensusStorage, InMemoryConsensusStorage},
     types::{ConsensusEvent, CreateProposalRequest, SessionTransition},
     utils::{
@@ -21,23 +21,35 @@ use crate::{
 ///
 /// This is the main entry point for using the consensus service.
 /// It handles creating proposals, processing votes, and managing timeouts.
-pub struct ConsensusService<Scope, S, E>
+///
+/// Generic parameters:
+///
+/// - `Scope`: scope key type (see [`ConsensusScope`]).
+/// - `Storage`: storage backend (see [`ConsensusStorage`]).
+/// - `Event`: event bus backend (see [`ConsensusEventBus`]).
+/// - `Signer`: signature scheme (see [`ConsensusSignatureScheme`]). Carried only
+///   as a type; the service calls `Signer::verify` statically when validating
+///   incoming votes. All peers on a network must agree on this type.
+pub struct ConsensusService<Scope, Storage, Event, Signer>
 where
     Scope: ConsensusScope,
-    S: ConsensusStorage<Scope>,
-    E: ConsensusEventBus<Scope>,
+    Storage: ConsensusStorage<Scope>,
+    Event: ConsensusEventBus<Scope>,
+    Signer: ConsensusSignatureScheme,
 {
-    storage: S,
+    storage: Storage,
     max_sessions_per_scope: usize,
-    event_bus: E,
+    event_bus: Event,
     _scope: PhantomData<Scope>,
+    _scheme: PhantomData<fn() -> Signer>,
 }
 
-impl<Scope, S, E> Clone for ConsensusService<Scope, S, E>
+impl<Scope, Storage, Event, Signer> Clone for ConsensusService<Scope, Storage, Event, Signer>
 where
     Scope: ConsensusScope,
-    S: ConsensusStorage<Scope>,
-    E: ConsensusEventBus<Scope>,
+    Storage: ConsensusStorage<Scope>,
+    Event: ConsensusEventBus<Scope>,
+    Signer: ConsensusSignatureScheme,
 {
     fn clone(&self) -> Self {
         Self {
@@ -45,17 +57,21 @@ where
             max_sessions_per_scope: self.max_sessions_per_scope,
             event_bus: self.event_bus.clone(),
             _scope: PhantomData,
+            _scheme: PhantomData,
         }
     }
 }
 
-/// A ready-to-use service with in-memory storage and broadcast events.
-///
-/// This is the easiest way to get started. It stores everything in memory (great for
-/// testing or single-node setups) and uses a simple broadcast channel for events.
-/// If you need persistence or custom event handling, use `ConsensusService` directly.
-pub type DefaultConsensusService =
-    ConsensusService<ScopeID, InMemoryConsensusStorage<ScopeID>, BroadcastEventBus<ScopeID>>;
+/// A ready-to-use service with in-memory storage, broadcast events, and the
+/// [`EthereumConsensusSigner`] scheme. Intended for tests and single-node
+/// integrations. Production deployments typically construct
+/// [`ConsensusService`] directly with their own scheme.
+pub type DefaultConsensusService = ConsensusService<
+    ScopeID,
+    InMemoryConsensusStorage<ScopeID>,
+    BroadcastEventBus<ScopeID>,
+    EthereumConsensusSigner,
+>;
 
 impl DefaultConsensusService {
     /// Create a service with default settings (10 max sessions per scope).
@@ -83,23 +99,32 @@ impl Default for DefaultConsensusService {
     }
 }
 
-impl<Scope, S, E> ConsensusService<Scope, S, E>
+impl<Scope, Storage, Event, Signer> ConsensusService<Scope, Storage, Event, Signer>
 where
     Scope: ConsensusScope,
-    S: ConsensusStorage<Scope>,
-    E: ConsensusEventBus<Scope>,
+    Storage: ConsensusStorage<Scope>,
+    Event: ConsensusEventBus<Scope>,
+    Signer: ConsensusSignatureScheme,
 {
     /// Build a service with your own storage and event bus implementations.
     ///
-    /// Use this when you need custom persistence (like a database) or event handling.
-    /// The `max_sessions_per_scope` parameter controls how many sessions can exist per scope.
-    /// When the limit is reached, older sessions are automatically removed.
-    pub fn new_with_components(storage: S, event_bus: E, max_sessions_per_scope: usize) -> Self {
+    /// The signature scheme `Signer` is selected via turbofish or type inference at
+    /// the call site (or by using a type alias like
+    /// [`DefaultConsensusService`]). Use this when you need custom persistence
+    /// (like a database) or event handling. The `max_sessions_per_scope`
+    /// parameter controls how many sessions can exist per scope. When the
+    /// limit is reached, older sessions are automatically removed.
+    pub fn new_with_components(
+        storage: Storage,
+        event_bus: Event,
+        max_sessions_per_scope: usize,
+    ) -> Self {
         Self {
             storage,
             max_sessions_per_scope,
             event_bus,
             _scope: PhantomData,
+            _scheme: PhantomData,
         }
     }
 
@@ -109,14 +134,14 @@ where
     ///
     /// Use this for reading state (sessions, proposals, scope config) and for
     /// lifecycle operations like [`delete_scope`](ConsensusStorage::delete_scope).
-    pub fn storage(&self) -> &S {
+    pub fn storage(&self) -> &Storage {
         &self.storage
     }
 
     /// Access the underlying event bus.
     ///
     /// Use this to [`subscribe`](ConsensusEventBus::subscribe) to consensus events.
-    pub fn event_bus(&self) -> &E {
+    pub fn event_bus(&self) -> &Event {
         &self.event_bus
     }
 
@@ -155,7 +180,8 @@ where
     ) -> Result<Proposal, ConsensusError> {
         let proposal = request.into_proposal()?;
         let config = self.resolve_config(scope, config, Some(&proposal)).await?;
-        let (session, _) = ConsensusSession::from_proposal(proposal.clone(), config.clone())?;
+        let (session, _) =
+            ConsensusSession::from_proposal::<Signer>(proposal.clone(), config.clone())?;
         self.save_session(scope, session).await?;
         self.trim_scope_sessions(scope).await?;
         Ok(proposal)
@@ -166,18 +192,21 @@ where
     /// The vote is cryptographically signed with `signer` and linked into the
     /// hashgraph chain. Returns the signed [`Vote`] for network propagation.
     /// Each voter can only vote once per proposal.
-    pub async fn cast_vote<SN: Signer + Sync + Send>(
+    ///
+    /// The signer is of the same scheme `Signer` that the service uses for
+    /// verification, so signatures it produces are guaranteed to round-trip
+    /// through [`process_incoming_vote`](Self::process_incoming_vote).
+    pub async fn cast_vote(
         &self,
         scope: &Scope,
         proposal_id: u32,
         choice: bool,
-        signer: SN,
+        signer: Signer,
     ) -> Result<Vote, ConsensusError> {
         let session = self.get_session(scope, proposal_id).await?;
         validate_proposal_timestamp(session.proposal.expiration_timestamp)?;
 
-        let voter_address = signer.address().as_slice().to_vec();
-        if session.votes.contains_key(&voter_address) {
+        if session.votes.contains_key(signer.identity()) {
             return Err(ConsensusError::UserAlreadyVoted);
         }
 
@@ -196,12 +225,12 @@ where
     ///
     /// Convenience method useful for the proposal creator who wants to immediately
     /// gossip the updated proposal to peers.
-    pub async fn cast_vote_and_get_proposal<SN: Signer + Sync + Send>(
+    pub async fn cast_vote_and_get_proposal(
         &self,
         scope: &Scope,
         proposal_id: u32,
         choice: bool,
-        signer: SN,
+        signer: Signer,
     ) -> Result<Proposal, ConsensusError> {
         self.cast_vote(scope, proposal_id, choice, signer).await?;
         let session = self.get_session(scope, proposal_id).await?;
@@ -225,7 +254,7 @@ where
             return Err(ConsensusError::ProposalAlreadyExist);
         }
         let config = self.resolve_config(scope, None, Some(&proposal)).await?;
-        let (session, transition) = ConsensusSession::from_proposal(proposal, config)?;
+        let (session, transition) = ConsensusSession::from_proposal::<Signer>(proposal, config)?;
         self.handle_transition(scope, session.proposal.proposal_id, transition);
         self.save_session(scope, session).await?;
         self.trim_scope_sessions(scope).await?;
@@ -243,7 +272,7 @@ where
         vote: Vote,
     ) -> Result<(), ConsensusError> {
         let session = self.get_session(scope, vote.proposal_id).await?;
-        validate_vote(
+        validate_vote::<Signer>(
             &vote,
             session.proposal.expiration_timestamp,
             session.proposal.timestamp,
@@ -361,7 +390,7 @@ where
     pub async fn scope(
         &self,
         scope: &Scope,
-    ) -> Result<ScopeConfigBuilderWrapper<Scope, S, E>, ConsensusError> {
+    ) -> Result<ScopeConfigBuilderWrapper<Scope, Storage, Event, Signer>, ConsensusError> {
         let existing_config = self.storage.get_scope_config(scope).await?;
         let builder = if let Some(config) = existing_config {
             ScopeConfigBuilder::from_existing(config)
@@ -514,25 +543,27 @@ where
 }
 
 /// Wrapper around ScopeConfigBuilder that stores service and scope for convenience methods.
-pub struct ScopeConfigBuilderWrapper<Scope, S, E>
+pub struct ScopeConfigBuilderWrapper<Scope, Storage, Event, Signer>
 where
     Scope: ConsensusScope,
-    S: ConsensusStorage<Scope>,
-    E: ConsensusEventBus<Scope>,
+    Storage: ConsensusStorage<Scope>,
+    Event: ConsensusEventBus<Scope>,
+    Signer: ConsensusSignatureScheme,
 {
-    service: ConsensusService<Scope, S, E>,
+    service: ConsensusService<Scope, Storage, Event, Signer>,
     scope: Scope,
     builder: ScopeConfigBuilder,
 }
 
-impl<Scope, S, E> ScopeConfigBuilderWrapper<Scope, S, E>
+impl<Scope, Storage, Event, Signer> ScopeConfigBuilderWrapper<Scope, Storage, Event, Signer>
 where
     Scope: ConsensusScope,
-    S: ConsensusStorage<Scope>,
-    E: ConsensusEventBus<Scope>,
+    Storage: ConsensusStorage<Scope>,
+    Event: ConsensusEventBus<Scope>,
+    Signer: ConsensusSignatureScheme,
 {
     fn new(
-        service: ConsensusService<Scope, S, E>,
+        service: ConsensusService<Scope, Storage, Event, Signer>,
         scope: Scope,
         builder: ScopeConfigBuilder,
     ) -> Self {

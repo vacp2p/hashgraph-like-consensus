@@ -4,7 +4,6 @@
 //! [`ConsensusService`](crate::service::ConsensusService) API calls these internally.
 //! They are public for advanced use cases or custom integrations.
 
-use alloy_signer::{Signature, Signer};
 use prost::Message;
 use sha2::{Digest, Sha256};
 use std::{
@@ -16,9 +15,8 @@ use uuid::Uuid;
 use crate::{
     error::ConsensusError,
     protos::consensus::v1::{Proposal, Vote},
+    signing::ConsensusSignatureScheme,
 };
-
-const SIGNATURE_LENGTH: usize = 65;
 
 /// Fold a 128-bit value into 32 bits via XOR so every bit contributes.
 fn fold_u128_to_u32(n: u128) -> u32 {
@@ -56,21 +54,21 @@ pub fn compute_vote_hash(vote: &Vote) -> Vec<u8> {
 /// This builds a vote that links to previous votes in the hashgraph structure.
 /// The vote is signed with the provided signer and includes all the necessary
 /// fields for validation (parent_hash, received_hash, vote_hash, signature).
-pub async fn build_vote<S: Signer + Sync>(
+pub async fn build_vote<Signer: ConsensusSignatureScheme>(
     proposal: &Proposal,
     user_vote: bool,
-    signer: S,
+    signer: Signer,
 ) -> Result<Vote, ConsensusError> {
     let now = current_timestamp()?;
 
-    let voter_address = signer.address().as_slice().to_vec();
+    let voter_identity = signer.identity();
     // RFC Section 2.2: Define `parent_hash` as hash of previous owner's vote (empty if none).
     // RFC Section 2.3: Set `received_hash` to hash of immediately previous vote (last vote in list).
     let (parent_hash, received_hash) = if let Some(latest_vote) = proposal.votes.last() {
         let own_last_vote = proposal
             .votes
             .iter()
-            .rfind(|v| v.vote_owner == voter_address);
+            .rfind(|v| v.vote_owner.as_slice() == voter_identity);
 
         if let Some(own_vote) = own_last_vote {
             (own_vote.vote_hash.clone(), latest_vote.vote_hash.clone())
@@ -85,7 +83,7 @@ pub async fn build_vote<S: Signer + Sync>(
 
     let mut vote = Vote {
         vote_id,
-        vote_owner: signer.address().as_slice().to_vec(),
+        vote_owner: voter_identity.to_vec(),
         proposal_id: proposal.proposal_id,
         timestamp: now,
         vote: user_vote,
@@ -97,58 +95,38 @@ pub async fn build_vote<S: Signer + Sync>(
 
     vote.vote_hash = compute_vote_hash(&vote);
     let vote_bytes = vote.encode_to_vec();
-    let signature = signer.sign_message(&vote_bytes).await?;
-    vote.signature = signature.as_bytes().to_vec();
+    let signature = signer.sign(&vote_bytes).await?;
+    vote.signature = signature;
     Ok(vote)
 }
 
-/// Verify that a vote's signature is valid and matches the vote owner.
-///
-/// Checks that the signature was created by the owner's private key and that
-/// it signs the correct vote data. Returns `true` if valid, `false` otherwise.
-fn verify_vote_hash(
-    signature: &[u8],
-    public_key: &[u8],
-    message: &[u8],
-) -> Result<bool, ConsensusError> {
-    let signature_bytes: [u8; SIGNATURE_LENGTH] =
-        signature
-            .try_into()
-            .map_err(|_| ConsensusError::MismatchedLength {
-                expect: SIGNATURE_LENGTH,
-                actual: signature.len(),
-            })?;
-    let signature = Signature::from_raw_array(&signature_bytes)?;
-    let address = signature.recover_address_from_msg(message)?;
-    let address_bytes = address.as_slice().to_vec();
-    Ok(address_bytes == public_key)
-}
-
-/// Validate a proposal and all its votes.
+/// Validate a proposal and all its votes against a signature scheme.
 ///
 /// Checks that the proposal hasn't expired.
 /// Also validates that all votes belong to this proposal, vote signatures are valid,
 /// and the vote chain (parent_hash/received_hash) is correct.
 /// Should be called when receiving a proposal from the network.
-pub fn validate_proposal(proposal: &Proposal) -> Result<(), ConsensusError> {
+pub fn validate_proposal<Signer: ConsensusSignatureScheme>(
+    proposal: &Proposal,
+) -> Result<(), ConsensusError> {
     validate_proposal_timestamp(proposal.expiration_timestamp)?;
 
     for vote in proposal.votes.iter() {
         if vote.proposal_id != proposal.proposal_id {
             return Err(ConsensusError::VoteProposalIdMismatch);
         }
-        validate_vote(vote, proposal.expiration_timestamp, proposal.timestamp)?;
+        validate_vote::<Signer>(vote, proposal.expiration_timestamp, proposal.timestamp)?;
     }
     validate_vote_chain(&proposal.votes)?;
     Ok(())
 }
 
-/// Validate a single vote.
+/// Validate a single vote against a signature scheme.
 ///
 /// RFC Section 3.4: Validates timestamps (reject future timestamps and votes older than 1 hour).
 /// Also checks that the vote hash is correct, the signature is valid, and the vote hasn't expired.
 /// This prevents replay attacks and ensures vote integrity.
-pub(crate) fn validate_vote(
+pub(crate) fn validate_vote<Signer: ConsensusSignatureScheme>(
     vote: &Vote,
     expiration_timestamp: u64,
     creation_time: u64,
@@ -165,13 +143,6 @@ pub(crate) fn validate_vote(
         return Err(ConsensusError::EmptySignature);
     }
 
-    if vote.signature.len() != SIGNATURE_LENGTH {
-        return Err(ConsensusError::MismatchedLength {
-            expect: SIGNATURE_LENGTH,
-            actual: vote.signature.len(),
-        });
-    }
-
     let expected_hash = compute_vote_hash(vote);
     if vote.vote_hash != expected_hash {
         return Err(ConsensusError::InvalidVoteHash);
@@ -181,7 +152,7 @@ pub(crate) fn validate_vote(
     vote_copy.signature = Vec::new();
     let vote_copy_bytes = vote_copy.encode_to_vec();
 
-    let verified = verify_vote_hash(&vote.signature, &vote.vote_owner, &vote_copy_bytes)?;
+    let verified = Signer::verify(&vote.vote_owner, &vote_copy_bytes, &vote.signature)?;
 
     if !verified {
         return Err(ConsensusError::InvalidVoteSignature);
