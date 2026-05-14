@@ -107,6 +107,63 @@ lives there. It is generic over three pluggable backends:
 Use `service.storage()` for reads, queries, and cleanup.
 Use `service.event_bus()` for event subscription.
 
+### Service shape: one service vs. per-scope services
+
+The default pattern is **one `ConsensusService`, many scopes** — the service
+multiplexes proposals across independent decision streams. All scopes share
+one storage backend and one event bus; subscribers see `(Scope, ConsensusEvent)`
+pairs from every scope.
+
+For per-scope concerns (per-conversation in de-mls, per-channel in chat apps,
+per-room in collaboration tools) you can construct **one service per scope**.
+Storage backends are `Clone` and `Arc`-backed internally, so multiple services
+can share the same backing data while each owns an independent event bus:
+
+```rust
+use hashgraph_like_consensus::{
+    events::BroadcastEventBus,
+    scope::ScopeID,
+    service::ConsensusService,
+    signing::EthereumConsensusSigner,
+    storage::InMemoryConsensusStorage,
+};
+
+// Shared storage across all conversations.
+let storage = InMemoryConsensusStorage::<ScopeID>::new();
+
+// One service per conversation, each with its own event bus.
+let conv_a: ConsensusService<_, _, _, EthereumConsensusSigner> =
+    ConsensusService::new_with_components(
+        storage.clone(),                // shared backing data
+        BroadcastEventBus::default(),   // private bus for this conversation
+        10,
+    );
+
+let conv_b: ConsensusService<_, _, _, EthereumConsensusSigner> =
+    ConsensusService::new_with_components(
+        storage.clone(),
+        BroadcastEventBus::default(),
+        10,
+    );
+
+// Each conversation's subscribers only see its own events — no filtering needed.
+let mut events_a = conv_a.event_bus().subscribe();
+let mut events_b = conv_b.event_bus().subscribe();
+```
+
+The same shape works for DB-backed storage: build one `Pool`/connection-bearing
+storage value, clone it for each per-scope service.
+
+**Cost of scope indexing.** Scope is the partition key in storage; the overhead
+is negligible.
+
+- **In-memory:** the outer `HashMap<Scope, _>` adds roughly 50 bytes per scope
+  plus a small inner allocation. At 1000 scopes that's tens of kilobytes total.
+- **Database:** the `scope_id` column you'd want anyway for any multi-tenant
+  table becomes a partition key. Point lookups (`get_session`) are identical
+  speed to a flat namespace; `list_scope_sessions` and `delete_scope` become
+  indexed range scans instead of full-table filters.
+
 ## What the Library Does vs. What You Do
 
 This library handles **consensus calculation** — vote validation, hashgraph
