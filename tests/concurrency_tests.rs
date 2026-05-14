@@ -3,10 +3,15 @@ use futures::future::join_all;
 use std::{sync::Arc, time::Duration};
 use tokio::{spawn, sync::Barrier, time::sleep};
 
+use hashgraph_like_consensus::signing::EthereumConsensusSigner;
 use hashgraph_like_consensus::{
     error::ConsensusError, scope::ScopeID, service::DefaultConsensusService,
     session::ConsensusConfig, storage::ConsensusStorage, types::CreateProposalRequest,
 };
+
+fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
+    EthereumConsensusSigner::new(signer)
+}
 
 const SCOPE: &str = "concurrency_scope";
 const PROPOSAL_NAME: &str = "Concurrency Test";
@@ -63,7 +68,7 @@ async fn test_concurrent_vote_casting() {
             barrier_clone.wait().await;
             let voter = PrivateKeySigner::random();
             service_clone
-                .cast_vote(&scope_clone, proposal_id, i % 2 == 0, voter)
+                .cast_vote(&scope_clone, proposal_id, i % 2 == 0, wrap(voter))
                 .await
         });
         handles.push(handle);
@@ -161,7 +166,7 @@ async fn test_concurrent_duplicate_vote_rejection() {
         let voter_clone = voter.clone();
         let handle = spawn(async move {
             service_clone
-                .cast_vote(&scope_clone, proposal_id, true, voter_clone)
+                .cast_vote(&scope_clone, proposal_id, true, wrap(voter_clone))
                 .await
         });
         handles.push(handle);

@@ -1,4 +1,5 @@
 use futures::StreamExt;
+use hashgraph_like_consensus::signing::EthereumConsensusSigner;
 
 use hashgraph_like_consensus::{
     scope::ScopeID,
@@ -26,8 +27,11 @@ fn make_session(name: &str) -> ConsensusSession {
     .into_proposal()
     .expect("proposal");
 
-    let (session, _) =
-        ConsensusSession::from_proposal(proposal, ConsensusConfig::gossipsub()).expect("session");
+    let (session, _) = ConsensusSession::from_proposal::<EthereumConsensusSigner>(
+        proposal,
+        ConsensusConfig::gossipsub(),
+    )
+    .expect("session");
     session
 }
 

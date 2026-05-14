@@ -1,5 +1,6 @@
 use alloy::signers::Signer;
 use alloy::signers::local::PrivateKeySigner;
+use hashgraph_like_consensus::signing::EthereumConsensusSigner;
 use prost::Message;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,6 +16,10 @@ use hashgraph_like_consensus::{
     types::{ConsensusEvent, CreateProposalRequest},
     utils::{build_vote, compute_vote_hash},
 };
+
+fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
+    EthereumConsensusSigner::new(signer)
+}
 
 const SCOPE1_NAME: &str = "scope1";
 const SCOPE2_NAME: &str = "scope2";
@@ -68,7 +73,7 @@ async fn cast_vote_or_panic(
     msg: &str,
 ) {
     service
-        .cast_vote(scope, proposal_id, choice, signer)
+        .cast_vote(scope, proposal_id, choice, wrap(signer))
         .await
         .expect(msg);
 }
@@ -97,7 +102,7 @@ async fn test_basic_consensus_flow() {
         .expect("proposal should be created");
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("proposal_owner vote should succeed");
 
@@ -124,13 +129,13 @@ async fn test_basic_consensus_flow() {
 
     let voter_two = PrivateKeySigner::random();
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, voter_two)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(voter_two))
         .await
         .expect("second vote should succeed");
 
     let voter_three = PrivateKeySigner::random();
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, voter_three)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(voter_three))
         .await
         .expect("third vote should succeed");
 
@@ -172,7 +177,7 @@ async fn test_multi_scope_isolation() {
         .expect("scope1 proposal");
 
     service
-        .cast_vote_and_get_proposal(&scope1, proposal_1.proposal_id, VOTE_YES, signer1)
+        .cast_vote_and_get_proposal(&scope1, proposal_1.proposal_id, VOTE_YES, wrap(signer1))
         .await
         .expect("scope1 proposal_owner vote");
 
@@ -194,7 +199,7 @@ async fn test_multi_scope_isolation() {
         .expect("scope2 proposal");
 
     service
-        .cast_vote_and_get_proposal(&scope2, proposal_2.proposal_id, VOTE_YES, signer2)
+        .cast_vote_and_get_proposal(&scope2, proposal_2.proposal_id, VOTE_YES, wrap(signer2))
         .await
         .expect("scope2 proposal_owner vote");
 
@@ -249,14 +254,14 @@ async fn test_consensus_threshold_emits_event() {
         .expect("proposal should be created");
 
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("proposal_owner vote");
 
     for _ in 0..3 {
         let signer = PrivateKeySigner::random();
         service
-            .cast_vote(&scope, proposal.proposal_id, VOTE_YES, signer)
+            .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(signer))
             .await
             .expect("additional vote");
     }
@@ -909,13 +914,13 @@ async fn test_cast_vote_rejects_same_voter_twice() {
             &scope,
             proposal.proposal_id,
             VOTE_YES,
-            proposal_owner.clone(),
+            wrap(proposal_owner.clone()),
         )
         .await
         .expect("first vote should succeed");
 
     let err = service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect_err("second vote from same voter should fail");
 
@@ -985,7 +990,12 @@ async fn test_process_incoming_vote_rejects_unknown_session() {
     let unknown_proposal_id = proposal.proposal_id.wrapping_add(1);
     let vote_owner = PrivateKeySigner::random();
     let vote = service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, vote_owner.clone())
+        .cast_vote(
+            &scope,
+            proposal.proposal_id,
+            VOTE_YES,
+            wrap(vote_owner.clone()),
+        )
         .await
         .expect("valid signed vote");
 
@@ -1082,12 +1092,12 @@ async fn test_process_incoming_vote_rejects_invalid_vote_hash() {
         .expect("proposal should be created");
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("first vote should succeed");
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, voter)
+    let mut vote = build_vote(&proposal, VOTE_YES, wrap(voter))
         .await
         .expect("valid vote should be built");
     vote.vote_hash = vec![1; 32];
@@ -1131,13 +1141,13 @@ async fn test_process_incoming_vote_rejects_invalid_vote_signature() {
             &scope,
             proposal.proposal_id,
             VOTE_YES,
-            proposal_owner.clone(),
+            wrap(proposal_owner.clone()),
         )
         .await
         .expect("first vote should succeed");
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, voter)
+    let mut vote = build_vote(&proposal, VOTE_YES, wrap(voter))
         .await
         .expect("valid vote should be built");
     let wrong_signer = PrivateKeySigner::random();
@@ -1187,12 +1197,12 @@ async fn test_process_incoming_vote_rejects_duplicate_vote_owner() {
             &scope,
             proposal.proposal_id,
             VOTE_YES,
-            proposal_owner.clone(),
+            wrap(proposal_owner.clone()),
         )
         .await
         .expect("first owner vote should succeed");
 
-    let duplicate_vote = build_vote(&proposal, VOTE_YES, proposal_owner)
+    let duplicate_vote = build_vote(&proposal, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("duplicate vote should be signable");
 
@@ -1231,12 +1241,12 @@ async fn test_process_incoming_vote_rejects_expired_vote_timestamp() {
         .expect("proposal should be created");
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("first vote should succeed");
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, voter.clone())
+    let mut vote = build_vote(&proposal, VOTE_YES, wrap(voter.clone()))
         .await
         .expect("valid vote should be built");
     vote.timestamp = proposal.expiration_timestamp.saturating_add(1);
@@ -1286,13 +1296,13 @@ async fn test_handle_consensus_timeout_is_idempotent_for_failed_session() {
         .expect("proposal should be created");
 
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("first vote should succeed");
 
     let voter2 = PrivateKeySigner::random();
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, voter2)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(voter2))
         .await
         .expect("second vote should succeed");
 
@@ -1356,7 +1366,7 @@ async fn test_cast_vote_still_active_does_not_emit_consensus_event() {
 
     // One vote is insufficient for n=4; transition should remain StillActive.
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("vote should succeed");
 
@@ -1443,7 +1453,7 @@ async fn test_get_reached_proposals_with_consensus() {
 
     // Cast vote to reach consensus
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("vote should succeed");
 
@@ -1536,7 +1546,7 @@ async fn test_get_reached_proposals_mixed_states() {
         .expect("proposal should be created");
 
     service
-        .cast_vote(&scope, proposal1.proposal_id, true, proposal_owner1)
+        .cast_vote(&scope, proposal1.proposal_id, true, wrap(proposal_owner1))
         .await
         .expect("vote should succeed");
 
@@ -1559,7 +1569,7 @@ async fn test_get_reached_proposals_mixed_states() {
         .expect("proposal should be created");
 
     service
-        .cast_vote(&scope, proposal2.proposal_id, false, proposal_owner2)
+        .cast_vote(&scope, proposal2.proposal_id, false, wrap(proposal_owner2))
         .await
         .expect("vote should succeed");
 
@@ -1689,7 +1699,7 @@ async fn test_delete_scope_cleans_up_all_state() {
     .await;
 
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("vote should succeed");
 
@@ -1762,7 +1772,7 @@ async fn test_delete_scope_cleans_up_all_state() {
     .await;
 
     service
-        .cast_vote(&scope, new_proposal.proposal_id, VOTE_YES, new_owner)
+        .cast_vote(&scope, new_proposal.proposal_id, VOTE_YES, wrap(new_owner))
         .await
         .expect("vote on new proposal should succeed");
 

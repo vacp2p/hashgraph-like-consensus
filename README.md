@@ -13,9 +13,10 @@ Perfect for group governance, voting systems, or any scenario where you need dis
 - **Fast** - Reaches consensus in O(log n) rounds
 - **Byzantine fault tolerant** - Correct even if up to 1/3 of peers are malicious
 - **Pluggable storage** - In-memory by default; implement `ConsensusStorage` for persistence
+- **Pluggable signing** - Default ECDSA-secp256k1 via `EthereumConsensusSigner`; implement `ConsensusSignatureScheme` for Ed25519, HSMs, or any custom scheme
 - **Network-agnostic** - Works with both Gossipsub (fixed 2-round) and P2P (dynamic rounds) topologies
 - **Event-driven** - Subscribe to consensus outcomes via a broadcast event bus
-- **Cryptographic integrity** - Votes are signed with secp256k1 and chained in a hashgraph structure
+- **Cryptographic integrity** - Votes are signed and chained in a hashgraph structure
 
 Based on the [Hashgraph-like Consensus Protocol RFC](https://lip.logos.co/ift-ts/raw/consensus-hashgraphlike.html).
 
@@ -34,6 +35,7 @@ hashgraph-like-consensus = { git = "https://github.com/vacp2p/hashgraph-like-con
 use hashgraph_like_consensus::{
     scope::ScopeID,
     service::DefaultConsensusService,
+    signing::{ConsensusSignatureScheme, EthereumConsensusSigner},
     types::CreateProposalRequest,
 };
 use alloy::signers::local::PrivateKeySigner;
@@ -42,7 +44,7 @@ use alloy::signers::local::PrivateKeySigner;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = DefaultConsensusService::default();
     let scope = ScopeID::from("example-scope");
-    let signer = PrivateKeySigner::random();
+    let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
 
     // Create a proposal
     let proposal = service
@@ -51,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             CreateProposalRequest::new(
                 "Upgrade contract".into(),   // name
                 b"Switch to v2".to_vec(),     // payload (bytes)
-                signer.address().as_slice().to_vec(), // owner
+                signer.identity().to_vec(),  // owner
                 3,                           // expected voters
                 60,                          // expiration (seconds from now)
                 true,                        // liveness: silent peers count as YES at timeout
@@ -96,10 +98,11 @@ Scope (group / channel)
 ### Architecture
 
 `ConsensusService` is the single entry point. All consensus business logic
-lives there. It is generic over two pluggable backends:
+lives there. It is generic over three pluggable backends:
 
 - `ConsensusStorage` — where sessions and votes are persisted (in-memory, database, etc.)
 - `ConsensusEventBus` — how consensus events are delivered (broadcast channel, message queue, etc.)
+- `ConsensusSignatureScheme` — how votes are signed and verified (ECDSA-secp256k1 by default, or your own scheme)
 
 Use `service.storage()` for reads, queries, and cleanup.
 Use `service.event_bus()` for event subscription.
@@ -115,7 +118,7 @@ orchestration. Your application is responsible for:
 | **Network propagation**              | The library performs no I/O. When you create a proposal or cast a vote, you must gossip it to peers yourself. When a message arrives from the network, call `process_incoming_proposal` or `process_incoming_vote`.                                |
 | **Timeout scheduling**               | The library does not spawn timers. You must schedule a timer for each proposal (using `consensus_timeout()` from the config) and call `handle_consensus_timeout` when it fires. Without this, proposals with offline voters stay `Active` forever. |
 | **`expected_voters_count` accuracy** | This value drives all threshold math (`ceil(2n/3)` quorum, silent peer counting). If it doesn't match the actual group size, consensus results will be wrong.                                                                                      |
-| **Signer management**                | You provide the private key signer when casting a vote. The library derives the voter identity from it. Each signer may vote at most once per proposal.                                                                                            |
+| **Signer management**                | You provide a `ConsensusSignatureScheme` value when casting a vote (e.g. `EthereumConsensusSigner::new(private_key)`). The library uses `identity()` for the voter address. Each identity may vote at most once per proposal.                       |
 | **Proposal ID tracking**             | The library generates a `proposal_id` on creation. You must store it and pass it to every subsequent call (`cast_vote`, `handle_consensus_timeout`, etc.).                                                                                         |
 | **Session eviction awareness**       | The default service keeps at most 10 sessions per scope (configurable via `new_with_max_sessions`). Older sessions are silently dropped when the limit is exceeded. Archive results before they are evicted.                                       |
 
@@ -124,16 +127,19 @@ orchestration. Your application is responsible for:
 ### Creating a Service
 
 ```rust
-use hashgraph_like_consensus::service::DefaultConsensusService;
+use hashgraph_like_consensus::service::{ConsensusService, DefaultConsensusService};
 
-// Default: in-memory storage, 10 max sessions per scope
+// Default: in-memory storage, broadcast events, EthereumConsensusSigner scheme,
+// 10 max sessions per scope
 let service = DefaultConsensusService::default();
 
-// Custom session limit
+// Custom session limit (still the Ethereum default scheme)
 let service = DefaultConsensusService::new_with_max_sessions(20);
 
-// Fully custom: plug in your own storage and event bus
-let service = ConsensusService::new_with_components(my_storage, my_event_bus, 10);
+// Fully custom: plug in your own storage, event bus, and signature scheme
+// (the scheme is picked via the type — typically via a type alias)
+let service: ConsensusService<MyScope, MyStorage, MyEvents, MyScheme> =
+    ConsensusService::new_with_components(my_storage, my_event_bus, 10);
 ```
 
 ### Configuring a Scope
@@ -201,15 +207,20 @@ service.process_incoming_proposal(&scope, proposal).await?;
 ### Casting and Processing Votes
 
 ```rust
+use hashgraph_like_consensus::signing::EthereumConsensusSigner;
+use alloy::signers::local::PrivateKeySigner;
+
+let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
+
 // Cast your vote (yes = true, no = false)
-let vote = service.cast_vote(&scope, proposal_id, true, signer).await?;
+let vote = service.cast_vote(&scope, proposal_id, true, signer.clone()).await?;
 
 // Cast a vote and get the updated proposal (useful for gossiping)
 let proposal = service
     .cast_vote_and_get_proposal(&scope, proposal_id, true, signer)
     .await?;
 
-// Process a vote received from the network
+// Process a vote received from the network (uses the service's scheme to verify)
 service.process_incoming_vote(&scope, vote).await?;
 ```
 
@@ -342,17 +353,71 @@ pub trait ConsensusEventBus<Scope> {
 }
 ```
 
+### Custom Signature Scheme
+
+The default `EthereumConsensusSigner` uses ECDSA-secp256k1 with 20-byte
+Ethereum addresses, matching the historical behavior of the crate. To
+integrate Ed25519, an HSM, or any other scheme, implement
+`ConsensusSignatureScheme`:
+
+```rust
+use hashgraph_like_consensus::signing::{
+    ConsensusSchemeError, ConsensusSignatureScheme,
+};
+
+pub trait ConsensusSignatureScheme: Send + Sync {
+    /// Identity bytes written into `Vote::vote_owner` (address, public key, etc.).
+    fn identity(&self) -> &[u8];
+
+    /// Sign a payload. Returns raw signature bytes (length scheme-specific).
+    fn sign(&self, payload: &[u8])
+        -> impl Future<Output = Result<Vec<u8>, ConsensusSchemeError>> + Send;
+
+    /// Static verification — no instance needed. The service calls this for
+    /// every incoming vote.
+    fn verify(identity: &[u8], payload: &[u8], signature: &[u8])
+        -> Result<bool, ConsensusSchemeError>;
+}
+```
+
+The same type plays both roles: a value carries private state for signing,
+and the type itself is used statically by the service for verification. All
+peers on a network must agree on the scheme type. Pick it at service
+construction:
+
+```rust
+use hashgraph_like_consensus::{
+    events::BroadcastEventBus,
+    scope::ScopeID,
+    service::ConsensusService,
+    storage::InMemoryConsensusStorage,
+};
+
+type MyService = ConsensusService<
+    ScopeID,
+    InMemoryConsensusStorage<ScopeID>,
+    BroadcastEventBus<ScopeID>,
+    MyScheme,  // <- your ConsensusSignatureScheme impl
+>;
+```
+
+See `tests/custom_scheme_tests.rs` for a working non-Ethereum example.
+
 ### Utility Functions
 
 The `utils` module provides low-level helpers for advanced use cases:
 
-| Function                       | Description                                                              |
-| ------------------------------ | ------------------------------------------------------------------------ |
-| `build_vote()`                 | Create a signed vote linked into the hashgraph chain                     |
-| `compute_vote_hash()`          | Compute the deterministic hash of a vote                                 |
-| `validate_proposal()`          | Validate a proposal and all its votes                                    |
-| `calculate_consensus_result()` | Determine result from collected votes using threshold and liveness rules |
-| `has_sufficient_votes()`       | Quick threshold check (count-based)                                      |
+| Function                              | Description                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------ |
+| `build_vote::<Signer>()`              | Create a signed vote linked into the hashgraph chain                     |
+| `compute_vote_hash()`                 | Compute the deterministic hash of a vote                                 |
+| `validate_proposal::<Signer>()`       | Validate a proposal and all its votes against a signature scheme         |
+| `calculate_consensus_result()`        | Determine result from collected votes using threshold and liveness rules |
+| `has_sufficient_votes()`              | Quick threshold check (count-based)                                      |
+
+The generic `Signer` parameter on `build_vote` / `validate_proposal` /
+`validate_vote` selects which `ConsensusSignatureScheme` to use; pick it via
+turbofish or inference at the call site.
 
 ## Building
 

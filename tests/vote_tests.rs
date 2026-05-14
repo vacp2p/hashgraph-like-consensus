@@ -4,9 +4,14 @@ use hashgraph_like_consensus::{
     scope::ScopeID,
     service::DefaultConsensusService,
     session::ConsensusConfig,
+    signing::EthereumConsensusSigner,
     types::CreateProposalRequest,
     utils::{build_vote, validate_proposal},
 };
+
+fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
+    EthereumConsensusSigner::new(signer)
+}
 
 const SCOPE: &str = "vote_scope";
 const PROPOSAL_NAME: &str = "Vote Test Proposal";
@@ -46,12 +51,12 @@ async fn test_received_hash_for_new_voter() {
         .expect("proposal");
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("proposal_owner vote");
 
     let other_voter = PrivateKeySigner::random();
-    let vote = build_vote(&proposal, VOTE_YES, other_voter)
+    let vote = build_vote(&proposal, VOTE_YES, wrap(other_voter))
         .await
         .expect("second vote");
 
@@ -66,7 +71,8 @@ async fn test_received_hash_for_new_voter() {
 
     let mut proposal_with_vote = proposal.clone();
     proposal_with_vote.votes.push(vote);
-    validate_proposal(&proposal_with_vote).expect("proposal with second voter should validate");
+    validate_proposal::<EthereumConsensusSigner>(&proposal_with_vote)
+        .expect("proposal with second voter should validate");
 }
 
 #[tokio::test]
@@ -97,13 +103,13 @@ async fn test_parent_hash_for_same_voter() {
             &scope,
             proposal.proposal_id,
             VOTE_YES,
-            proposal_owner.clone(),
+            wrap(proposal_owner.clone()),
         )
         .await
         .expect("proposal_owner vote");
 
     // Create a second vote from the same voter to exercise parent_hash logic.
-    let second_vote = build_vote(&proposal, VOTE_NO, proposal_owner)
+    let second_vote = build_vote(&proposal, VOTE_NO, wrap(proposal_owner))
         .await
         .expect("second vote");
 
@@ -118,6 +124,6 @@ async fn test_parent_hash_for_same_voter() {
 
     let mut proposal_with_vote = proposal.clone();
     proposal_with_vote.votes.push(second_vote);
-    validate_proposal(&proposal_with_vote)
+    validate_proposal::<EthereumConsensusSigner>(&proposal_with_vote)
         .expect("proposal with parent hash chain should validate");
 }

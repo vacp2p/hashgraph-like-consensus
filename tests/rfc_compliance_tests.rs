@@ -1,4 +1,5 @@
 use alloy::signers::{Signer, local::PrivateKeySigner};
+use hashgraph_like_consensus::signing::EthereumConsensusSigner;
 use prost::Message;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
@@ -12,6 +13,10 @@ use hashgraph_like_consensus::{
     types::CreateProposalRequest,
     utils::{build_vote, compute_vote_hash},
 };
+
+fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
+    EthereumConsensusSigner::new(signer)
+}
 
 const SCOPE: &str = "rfc_compliance_scope";
 const PROPOSAL_NAME: &str = "RFC Compliance Test";
@@ -92,7 +97,7 @@ async fn test_round_increments_on_vote_p2p() {
     );
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("vote should be added");
 
@@ -103,7 +108,7 @@ async fn test_round_increments_on_vote_p2p() {
 
     let voter2 = PrivateKeySigner::random();
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, voter2)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(voter2))
         .await
         .expect("second vote should be added");
 
@@ -146,7 +151,7 @@ async fn test_gossipsub_rounds_stay_at_two() {
 
     // First vote moves to round 2
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("vote should be added");
 
@@ -159,7 +164,7 @@ async fn test_gossipsub_rounds_stay_at_two() {
     // Second vote stays at round 2
     let voter2 = PrivateKeySigner::random();
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, voter2)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(voter2))
         .await
         .expect("second vote should be added");
 
@@ -172,7 +177,7 @@ async fn test_gossipsub_rounds_stay_at_two() {
     // Third vote also stays at round 2 (this reaches consensus with 3 YES votes)
     let voter3 = PrivateKeySigner::random();
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, voter3)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(voter3))
         .await
         .expect("third vote should be added");
 
@@ -217,7 +222,7 @@ async fn test_gossipsub_allows_multiple_votes_in_round_two() {
 
     // First vote moves to round 2
     let mut last_proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("vote should be added");
     assert_eq!(last_proposal.round, 2);
@@ -228,7 +233,7 @@ async fn test_gossipsub_allows_multiple_votes_in_round_two() {
     for i in 0..6 {
         let voter = PrivateKeySigner::random();
         last_proposal = service
-            .cast_vote_and_get_proposal(&scope, last_proposal.proposal_id, VOTE_YES, voter)
+            .cast_vote_and_get_proposal(&scope, last_proposal.proposal_id, VOTE_YES, wrap(voter))
             .await
             .unwrap_or_else(|_| panic!("vote {} should be added", i + 2));
         assert_eq!(
@@ -282,7 +287,12 @@ async fn test_p2p_dynamic_max_rounds() {
     let mut last_proposal = proposal;
     for (i, voter) in voters.iter().enumerate() {
         last_proposal = service
-            .cast_vote_and_get_proposal(&scope, last_proposal.proposal_id, VOTE_YES, voter.clone())
+            .cast_vote_and_get_proposal(
+                &scope,
+                last_proposal.proposal_id,
+                VOTE_YES,
+                wrap(voter.clone()),
+            )
             .await
             .unwrap_or_else(|_| panic!("vote {} should be added", i + 1));
         assert_eq!(
@@ -373,7 +383,7 @@ async fn test_p2p_ceil_calculation_edge_cases() {
                     &scope,
                     last_proposal.proposal_id,
                     VOTE_YES,
-                    voter.clone(),
+                    wrap(voter.clone()),
                 )
                 .await
                 .unwrap_or_else(|_| panic!("vote {} for n={} should succeed", i + 1, n));
@@ -411,21 +421,21 @@ async fn test_gossipsub_batch_vote_processing() {
 
     // Add votes to the proposal (simulating votes received from network)
     let voter1 = PrivateKeySigner::random();
-    let vote1 = build_vote(&proposal, VOTE_YES, voter1)
+    let vote1 = build_vote(&proposal, VOTE_YES, wrap(voter1))
         .await
         .expect("vote should be created");
     proposal.votes.push(vote1);
     proposal.round = 2; // Gossipsub: round 2 after first vote
 
     let voter2 = PrivateKeySigner::random();
-    let vote2 = build_vote(&proposal, VOTE_YES, voter2)
+    let vote2 = build_vote(&proposal, VOTE_YES, wrap(voter2))
         .await
         .expect("vote should be created");
     proposal.votes.push(vote2);
     // Round stays at 2 for gossipsub
 
     let voter3 = PrivateKeySigner::random();
-    let vote3 = build_vote(&proposal, VOTE_YES, voter3)
+    let vote3 = build_vote(&proposal, VOTE_YES, wrap(voter3))
         .await
         .expect("vote should be created");
     proposal.votes.push(vote3);
@@ -443,7 +453,7 @@ async fn test_gossipsub_batch_vote_processing() {
     // Verify by casting another vote and checking the proposal
     let voter4 = PrivateKeySigner::random();
     let final_proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, voter4)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(voter4))
         .await
         .expect("additional vote should succeed");
     assert_eq!(
@@ -484,7 +494,7 @@ async fn test_p2p_batch_vote_processing() {
     }
 
     for (i, voter) in voters.iter().enumerate() {
-        let vote = build_vote(&proposal, VOTE_YES, voter.clone())
+        let vote = build_vote(&proposal, VOTE_YES, wrap(voter.clone()))
             .await
             .expect("vote should be created");
         proposal.votes.push(vote);
@@ -518,7 +528,7 @@ async fn test_p2p_batch_vote_processing() {
     // Try to add one more vote - should fail because consensus is already reached
     let voter7 = PrivateKeySigner::random();
     let _vote_result = service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, voter7)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(voter7))
         .await;
 
     // The vote might succeed (returns vote) but won't be added because session reached consensus
@@ -574,7 +584,7 @@ async fn test_consensus_reachable_in_both_modes() {
 
     for voter in voters1 {
         service
-            .cast_vote(&scope1, proposal1.proposal_id, VOTE_YES, voter)
+            .cast_vote(&scope1, proposal1.proposal_id, VOTE_YES, wrap(voter))
             .await
             .expect("vote should succeed");
     }
@@ -614,7 +624,7 @@ async fn test_consensus_reachable_in_both_modes() {
 
     for voter in voters2 {
         service
-            .cast_vote(&scope2, proposal2.proposal_id, VOTE_YES, voter)
+            .cast_vote(&scope2, proposal2.proposal_id, VOTE_YES, wrap(voter))
             .await
             .expect("vote should succeed");
     }
@@ -652,7 +662,7 @@ async fn test_n_le_2_requires_unanimous_yes() {
         .expect("proposal should be created");
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("vote should be added");
 
@@ -685,13 +695,18 @@ async fn test_n_le_2_requires_unanimous_yes() {
         .expect("proposal should be created");
 
     let proposal2 = service
-        .cast_vote_and_get_proposal(&scope2, proposal2.proposal_id, VOTE_YES, proposal_owner2)
+        .cast_vote_and_get_proposal(
+            &scope2,
+            proposal2.proposal_id,
+            VOTE_YES,
+            wrap(proposal_owner2),
+        )
         .await
         .expect("first vote");
 
     let voter2 = PrivateKeySigner::random();
     service
-        .cast_vote(&scope2, proposal2.proposal_id, VOTE_YES, voter2)
+        .cast_vote(&scope2, proposal2.proposal_id, VOTE_YES, wrap(voter2))
         .await
         .expect("second vote");
 
@@ -724,13 +739,18 @@ async fn test_n_le_2_requires_unanimous_yes() {
         .expect("proposal should be created");
 
     let proposal3 = service
-        .cast_vote_and_get_proposal(&scope3, proposal3.proposal_id, VOTE_YES, proposal_owner3)
+        .cast_vote_and_get_proposal(
+            &scope3,
+            proposal3.proposal_id,
+            VOTE_YES,
+            wrap(proposal_owner3),
+        )
         .await
         .expect("first vote");
 
     let voter3 = PrivateKeySigner::random();
     service
-        .cast_vote(&scope3, proposal3.proposal_id, VOTE_NO, voter3)
+        .cast_vote(&scope3, proposal3.proposal_id, VOTE_NO, wrap(voter3))
         .await
         .expect("second vote");
 
@@ -774,7 +794,7 @@ async fn test_n_gt_2_consensus_requirements() {
         .expect("proposal should be created");
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("first vote");
 
@@ -794,7 +814,7 @@ async fn test_n_gt_2_consensus_requirements() {
 
     let voter2 = PrivateKeySigner::random();
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, voter2)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(voter2))
         .await
         .expect("second vote");
 
@@ -840,7 +860,7 @@ async fn test_expired_proposal_rejected() {
     sleep(Duration::from_secs(EXPIRATION_WAIT_TIME_2_SECOND)).await;
     let voter = PrivateKeySigner::random();
     let err = service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, voter)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(voter))
         .await
         .expect_err("Should reject vote on expired proposal");
 
@@ -875,7 +895,7 @@ async fn test_timestamp_replay_attack_protection() {
         .expect("proposal should be created");
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("first vote");
 
@@ -887,7 +907,7 @@ async fn test_timestamp_replay_attack_protection() {
         .saturating_sub(EXPIRATION * 2); // More than expiration time
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, voter.clone())
+    let mut vote = build_vote(&proposal, VOTE_YES, wrap(voter.clone()))
         .await
         .expect("create vote");
 
@@ -942,25 +962,25 @@ async fn test_equality_of_votes_handling() {
         .expect("proposal should be created");
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, proposal_owner)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
         .await
         .expect("first vote");
 
     let voter2 = PrivateKeySigner::random();
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, voter2)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, wrap(voter2))
         .await
         .expect("second vote");
 
     let voter3 = PrivateKeySigner::random();
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_NO, voter3)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_NO, wrap(voter3))
         .await
         .expect("third vote");
 
     let voter4 = PrivateKeySigner::random();
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_NO, voter4)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_NO, wrap(voter4))
         .await
         .expect("fourth vote");
 
@@ -1002,25 +1022,30 @@ async fn test_equality_of_votes_handling() {
         .expect("proposal should be created");
 
     let proposal2 = service
-        .cast_vote_and_get_proposal(&scope2, proposal2.proposal_id, VOTE_YES, proposal_owner2)
+        .cast_vote_and_get_proposal(
+            &scope2,
+            proposal2.proposal_id,
+            VOTE_YES,
+            wrap(proposal_owner2),
+        )
         .await
         .expect("first vote");
 
     let voter2_2 = PrivateKeySigner::random();
     service
-        .cast_vote(&scope2, proposal2.proposal_id, VOTE_YES, voter2_2)
+        .cast_vote(&scope2, proposal2.proposal_id, VOTE_YES, wrap(voter2_2))
         .await
         .expect("second vote");
 
     let voter3_2 = PrivateKeySigner::random();
     service
-        .cast_vote(&scope2, proposal2.proposal_id, VOTE_NO, voter3_2)
+        .cast_vote(&scope2, proposal2.proposal_id, VOTE_NO, wrap(voter3_2))
         .await
         .expect("third vote");
 
     let voter4_2 = PrivateKeySigner::random();
     service
-        .cast_vote(&scope2, proposal2.proposal_id, VOTE_NO, voter4_2)
+        .cast_vote(&scope2, proposal2.proposal_id, VOTE_NO, wrap(voter4_2))
         .await
         .expect("fourth vote");
 

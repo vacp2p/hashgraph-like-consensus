@@ -2,7 +2,7 @@
 
 use crate::{
     events::ConsensusEventBus, scope::ConsensusScope, service::ConsensusService,
-    session::ConsensusState, storage::ConsensusStorage,
+    session::ConsensusState, signing::ConsensusSignatureScheme, storage::ConsensusStorage,
 };
 
 /// Aggregate counters for all sessions within a single scope.
@@ -18,11 +18,12 @@ pub struct ConsensusStats {
     pub consensus_reached: usize,
 }
 
-impl<Scope, S, E> ConsensusService<Scope, S, E>
+impl<Scope, Storage, Event, Signer> ConsensusService<Scope, Storage, Event, Signer>
 where
     Scope: ConsensusScope,
-    S: ConsensusStorage<Scope>,
-    E: ConsensusEventBus<Scope>,
+    Storage: ConsensusStorage<Scope>,
+    Event: ConsensusEventBus<Scope>,
+    Signer: ConsensusSignatureScheme,
 {
     /// Get statistics about proposals in a scope.
     ///
