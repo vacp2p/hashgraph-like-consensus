@@ -8,9 +8,44 @@ use hashgraph_like_consensus::{
     scope::ScopeID,
     service::DefaultConsensusService,
     session::ConsensusConfig,
+    storage::ConsensusStorage,
     types::CreateProposalRequest,
     utils::{build_vote, compute_vote_hash, validate_proposal},
 };
+
+async fn cast_remote_vote(
+    service: &DefaultConsensusService,
+    scope: &ScopeID,
+    proposal_id: u32,
+    choice: bool,
+    signer: &EthereumConsensusSigner,
+) -> Result<
+    hashgraph_like_consensus::protos::consensus::v1::Vote,
+    hashgraph_like_consensus::error::ConsensusError,
+> {
+    let proposal = service.storage().get_proposal(scope, proposal_id).await?;
+    let vote = build_vote(&proposal, choice, signer).await?;
+    service.process_incoming_vote(scope, vote.clone()).await?;
+    Ok(vote)
+}
+
+async fn cast_remote_vote_and_get_proposal(
+    service: &DefaultConsensusService,
+    scope: &ScopeID,
+    proposal_id: u32,
+    choice: bool,
+    signer: &EthereumConsensusSigner,
+) -> Result<
+    hashgraph_like_consensus::protos::consensus::v1::Proposal,
+    hashgraph_like_consensus::error::ConsensusError,
+> {
+    cast_remote_vote(service, scope, proposal_id, choice, signer).await?;
+    service.storage().get_proposal(scope, proposal_id).await
+}
+
+fn make_service() -> DefaultConsensusService {
+    DefaultConsensusService::new(EthereumConsensusSigner::new(PrivateKeySigner::random()))
+}
 
 fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
     EthereumConsensusSigner::new(signer)
@@ -49,7 +84,7 @@ async fn resign_vote(
 
 #[tokio::test]
 async fn test_vote_created_with_helper_is_valid() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -70,13 +105,18 @@ async fn test_vote_created_with_helper_is_valid() {
         .await
         .expect("proposal");
 
-    let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
-        .await
-        .expect("proposal_owner vote");
+    let proposal = cast_remote_vote_and_get_proposal(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner),
+    )
+    .await
+    .expect("proposal_owner vote");
 
     let voter = PrivateKeySigner::random();
-    let vote = build_vote(&proposal, VOTE_YES, wrap(voter))
+    let vote = build_vote(&proposal, VOTE_YES, &wrap(voter))
         .await
         .expect("vote should be created");
 
@@ -88,7 +128,7 @@ async fn test_vote_created_with_helper_is_valid() {
 
 #[tokio::test]
 async fn test_invalid_signature_is_rejected() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -109,13 +149,18 @@ async fn test_invalid_signature_is_rejected() {
         .await
         .expect("proposal");
 
-    let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
-        .await
-        .expect("proposal_owner vote");
+    let proposal = cast_remote_vote_and_get_proposal(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner),
+    )
+    .await
+    .expect("proposal_owner vote");
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, wrap(voter))
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter))
         .await
         .expect("vote");
 
@@ -140,7 +185,7 @@ async fn test_invalid_signature_is_rejected() {
 
 #[tokio::test]
 async fn test_vote_chain_validation_rejects_bad_received_hash() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -161,18 +206,23 @@ async fn test_vote_chain_validation_rejects_bad_received_hash() {
         .await
         .expect("proposal");
 
-    let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
-        .await
-        .expect("proposal_owner vote");
+    let proposal = cast_remote_vote_and_get_proposal(
+        &service,
+        &scope,
+        proposal.proposal_id,
+        VOTE_YES,
+        &wrap(proposal_owner),
+    )
+    .await
+    .expect("proposal_owner vote");
 
     let voter_one = PrivateKeySigner::random();
     let voter_two = PrivateKeySigner::random();
 
-    let vote_one = build_vote(&proposal, VOTE_YES, wrap(voter_one))
+    let vote_one = build_vote(&proposal, VOTE_YES, &wrap(voter_one))
         .await
         .expect("vote one");
-    let mut vote_two = build_vote(&proposal, VOTE_NO, wrap(voter_two.clone()))
+    let mut vote_two = build_vote(&proposal, VOTE_NO, &wrap(voter_two.clone()))
         .await
         .expect("vote two");
 
@@ -201,7 +251,7 @@ async fn test_vote_chain_validation_rejects_bad_received_hash() {
 
 #[tokio::test]
 async fn test_validate_proposal_rejects_empty_vote_owner() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -222,7 +272,7 @@ async fn test_validate_proposal_rejects_empty_vote_owner() {
         .await
         .expect("proposal");
 
-    let mut vote = build_vote(&proposal, VOTE_YES, wrap(proposal_owner))
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner))
         .await
         .expect("vote");
     vote.vote_owner.clear();
@@ -237,7 +287,7 @@ async fn test_validate_proposal_rejects_empty_vote_owner() {
 
 #[tokio::test]
 async fn test_validate_proposal_rejects_empty_vote_hash() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -258,7 +308,7 @@ async fn test_validate_proposal_rejects_empty_vote_hash() {
         .await
         .expect("proposal");
 
-    let mut vote = build_vote(&proposal, VOTE_YES, wrap(proposal_owner))
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner))
         .await
         .expect("vote");
     vote.vote_hash.clear();
@@ -273,7 +323,7 @@ async fn test_validate_proposal_rejects_empty_vote_hash() {
 
 #[tokio::test]
 async fn test_validate_proposal_rejects_empty_signature() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -294,7 +344,7 @@ async fn test_validate_proposal_rejects_empty_signature() {
         .await
         .expect("proposal");
 
-    let mut vote = build_vote(&proposal, VOTE_YES, wrap(proposal_owner))
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner))
         .await
         .expect("vote");
     vote.signature.clear();
@@ -309,7 +359,7 @@ async fn test_validate_proposal_rejects_empty_signature() {
 
 #[tokio::test]
 async fn test_validate_proposal_rejects_mismatched_signature_length() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -330,7 +380,7 @@ async fn test_validate_proposal_rejects_mismatched_signature_length() {
         .await
         .expect("proposal");
 
-    let mut vote = build_vote(&proposal, VOTE_YES, wrap(proposal_owner))
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner))
         .await
         .expect("vote");
     vote.signature = vec![7; 64];
@@ -347,7 +397,7 @@ async fn test_validate_proposal_rejects_mismatched_signature_length() {
 
 #[tokio::test]
 async fn test_vote_chain_validation_rejects_bad_parent_hash_owner_mismatch() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
 
@@ -371,10 +421,10 @@ async fn test_vote_chain_validation_rejects_bad_parent_hash_owner_mismatch() {
     let voter_one = PrivateKeySigner::random();
     let voter_two = PrivateKeySigner::random();
 
-    let vote_one = build_vote(&proposal, VOTE_YES, wrap(voter_one))
+    let vote_one = build_vote(&proposal, VOTE_YES, &wrap(voter_one))
         .await
         .expect("vote one");
-    let mut vote_two = build_vote(&proposal, VOTE_NO, wrap(voter_two.clone()))
+    let mut vote_two = build_vote(&proposal, VOTE_NO, &wrap(voter_two.clone()))
         .await
         .expect("vote two");
 

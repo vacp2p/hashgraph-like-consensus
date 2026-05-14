@@ -22,14 +22,19 @@ use crate::{
 /// This is the main entry point for using the consensus service.
 /// It handles creating proposals, processing votes, and managing timeouts.
 ///
+/// Each `ConsensusService` represents **one peer's view**: it holds the
+/// storage handle, the event bus, and that peer's signer. The multi-peer
+/// pattern is one service per peer with shared storage and (optionally)
+/// shared event bus — see the README "Service shape" section.
+///
 /// Generic parameters:
 ///
 /// - `Scope`: scope key type (see [`ConsensusScope`]).
 /// - `Storage`: storage backend (see [`ConsensusStorage`]).
 /// - `Event`: event bus backend (see [`ConsensusEventBus`]).
-/// - `Signer`: signature scheme (see [`ConsensusSignatureScheme`]). Carried only
-///   as a type; the service calls `Signer::verify` statically when validating
-///   incoming votes. All peers on a network must agree on this type.
+/// - `Signer`: signature scheme (see [`ConsensusSignatureScheme`]).
+///   The held instance signs this peer's outgoing votes; the same type
+///   provides `Signer::verify` for validating incoming votes.
 pub struct ConsensusService<Scope, Storage, Event, Signer>
 where
     Scope: ConsensusScope,
@@ -40,8 +45,8 @@ where
     storage: Storage,
     max_sessions_per_scope: usize,
     event_bus: Event,
+    signer: Signer,
     _scope: PhantomData<Scope>,
-    _scheme: PhantomData<fn() -> Signer>,
 }
 
 impl<Scope, Storage, Event, Signer> Clone for ConsensusService<Scope, Storage, Event, Signer>
@@ -56,8 +61,8 @@ where
             storage: self.storage.clone(),
             max_sessions_per_scope: self.max_sessions_per_scope,
             event_bus: self.event_bus.clone(),
+            signer: self.signer.clone(),
             _scope: PhantomData,
-            _scheme: PhantomData,
         }
     }
 }
@@ -74,9 +79,10 @@ pub type DefaultConsensusService = ConsensusService<
 >;
 
 impl DefaultConsensusService {
-    /// Create a service with default settings (10 max sessions per scope).
-    fn new() -> Self {
-        Self::new_with_max_sessions(10)
+    /// Create a service with in-memory storage, broadcast events, and the
+    /// given signer. Defaults to 10 max sessions per scope.
+    pub fn new(signer: EthereumConsensusSigner) -> Self {
+        Self::new_with_max_sessions(signer, 10)
     }
 
     /// Create a service with a custom limit on how many sessions can exist per scope.
@@ -84,18 +90,16 @@ impl DefaultConsensusService {
     /// When the limit is reached, older sessions are automatically removed to make room.
     /// Eviction is silent — no event is emitted. Archive results you need before they
     /// are evicted.
-    pub fn new_with_max_sessions(max_sessions_per_scope: usize) -> Self {
+    pub fn new_with_max_sessions(
+        signer: EthereumConsensusSigner,
+        max_sessions_per_scope: usize,
+    ) -> Self {
         Self::new_with_components(
             InMemoryConsensusStorage::new(),
             BroadcastEventBus::default(),
+            signer,
             max_sessions_per_scope,
         )
-    }
-}
-
-impl Default for DefaultConsensusService {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -117,14 +121,15 @@ where
     pub fn new_with_components(
         storage: Storage,
         event_bus: Event,
+        signer: Signer,
         max_sessions_per_scope: usize,
     ) -> Self {
         Self {
             storage,
             max_sessions_per_scope,
             event_bus,
+            signer,
             _scope: PhantomData,
-            _scheme: PhantomData,
         }
     }
 
@@ -143,6 +148,14 @@ where
     /// Use this to [`subscribe`](ConsensusEventBus::subscribe) to consensus events.
     pub fn event_bus(&self) -> &Event {
         &self.event_bus
+    }
+
+    /// Access this peer's signer.
+    ///
+    /// Use this to read the peer's identity (e.g. for proposal owner fields):
+    /// `service.signer().identity()`.
+    pub fn signer(&self) -> &Signer {
+        &self.signer
     }
 
     // ── Consensus operations (business logic) ──────────────────────────
@@ -187,30 +200,25 @@ where
         Ok(proposal)
     }
 
-    /// Cast a vote on an active proposal.
+    /// Cast a vote on an active proposal using this service's held signer.
     ///
-    /// The vote is cryptographically signed with `signer` and linked into the
-    /// hashgraph chain. Returns the signed [`Vote`] for network propagation.
-    /// Each voter can only vote once per proposal.
-    ///
-    /// The signer is of the same scheme `Signer` that the service uses for
-    /// verification, so signatures it produces are guaranteed to round-trip
-    /// through [`process_incoming_vote`](Self::process_incoming_vote).
+    /// The vote is cryptographically signed and linked into the hashgraph
+    /// chain. Returns the signed [`Vote`] for network propagation. Each peer
+    /// (identity) can only vote once per proposal.
     pub async fn cast_vote(
         &self,
         scope: &Scope,
         proposal_id: u32,
         choice: bool,
-        signer: Signer,
     ) -> Result<Vote, ConsensusError> {
         let session = self.get_session(scope, proposal_id).await?;
         validate_proposal_timestamp(session.proposal.expiration_timestamp)?;
 
-        if session.votes.contains_key(signer.identity()) {
+        if session.votes.contains_key(self.signer.identity()) {
             return Err(ConsensusError::UserAlreadyVoted);
         }
 
-        let vote = build_vote(&session.proposal, choice, signer).await?;
+        let vote = build_vote(&session.proposal, choice, &self.signer).await?;
         let vote_clone = vote.clone();
         let transition = self
             .update_session(scope, proposal_id, move |session| {
@@ -230,9 +238,8 @@ where
         scope: &Scope,
         proposal_id: u32,
         choice: bool,
-        signer: Signer,
     ) -> Result<Proposal, ConsensusError> {
-        self.cast_vote(scope, proposal_id, choice, signer).await?;
+        self.cast_vote(scope, proposal_id, choice).await?;
         let session = self.get_session(scope, proposal_id).await?;
         Ok(session.proposal)
     }
@@ -360,11 +367,18 @@ where
     ///
     /// # Example
     /// ```rust,no_run
-    /// use hashgraph_like_consensus::{scope_config::NetworkType, scope::ScopeID, service::DefaultConsensusService};
+    /// use hashgraph_like_consensus::{
+    ///     scope::ScopeID,
+    ///     scope_config::NetworkType,
+    ///     service::DefaultConsensusService,
+    ///     signing::EthereumConsensusSigner,
+    /// };
+    /// use alloy::signers::local::PrivateKeySigner;
     /// use std::time::Duration;
     ///
     /// async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    ///   let service = DefaultConsensusService::default();
+    ///   let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
+    ///   let service = DefaultConsensusService::new(signer);
     ///   let scope = ScopeID::from("my_scope");
     ///
     ///   // Initialize new scope

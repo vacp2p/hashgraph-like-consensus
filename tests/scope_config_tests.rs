@@ -1,10 +1,15 @@
 use std::time::Duration;
 
+use alloy::signers::local::PrivateKeySigner;
 use hashgraph_like_consensus::{
     error::ConsensusError, scope::ScopeID, scope_config::NetworkType,
-    service::DefaultConsensusService, session::ConsensusConfig, storage::ConsensusStorage,
-    types::CreateProposalRequest,
+    service::DefaultConsensusService, session::ConsensusConfig, signing::EthereumConsensusSigner,
+    storage::ConsensusStorage, types::CreateProposalRequest,
 };
+
+fn make_service() -> DefaultConsensusService {
+    DefaultConsensusService::new(EthereumConsensusSigner::new(PrivateKeySigner::random()))
+}
 
 const SCOPE_NAME: &str = "test_scope";
 const PROPOSAL_PAYLOAD: Vec<u8> = vec![];
@@ -14,7 +19,7 @@ const DEFAULT_SHORT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn test_scope_config_creation() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from(SCOPE_NAME);
 
     // Initialize scope with P2P network and custom threshold
@@ -41,7 +46,7 @@ async fn test_scope_config_creation() {
 
 #[tokio::test]
 async fn test_scope_config_update() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from("update_test_scope");
 
     // Initialize with default config
@@ -76,7 +81,7 @@ async fn test_scope_config_update() {
 
 #[tokio::test]
 async fn test_scope_config_update_multiple_fields() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from("multi_update_scope");
 
     // Initialize with initial config
@@ -114,7 +119,7 @@ async fn test_scope_config_update_multiple_fields() {
 
 #[tokio::test]
 async fn test_scope_config_presets() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from("preset_test_scope");
 
     // Test P2P preset
@@ -150,7 +155,7 @@ async fn test_scope_config_presets() {
 
 #[tokio::test]
 async fn test_scope_config_validation() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from("validation_test_scope");
 
     // Test invalid threshold (too high)
@@ -197,7 +202,7 @@ async fn test_scope_config_validation() {
 
 #[tokio::test]
 async fn test_scope_config_new_scope_uses_defaults() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from("new_scope_defaults");
 
     // Get config for non-existent scope - should return defaults
@@ -212,7 +217,7 @@ async fn test_scope_config_new_scope_uses_defaults() {
 
 #[tokio::test]
 async fn test_max_rounds_override_zero_validation() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope_p2p = ScopeID::from("p2p_zero_rounds");
     let scope_gossipsub = ScopeID::from("gossipsub_zero_rounds");
 
@@ -258,7 +263,7 @@ async fn test_max_rounds_override_zero_validation() {
 
 #[tokio::test]
 async fn create_proposal_with_config_preserves_override_timeout() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from("test_scope");
 
     let request = CreateProposalRequest::new(
@@ -291,7 +296,7 @@ async fn create_proposal_with_config_preserves_override_timeout() {
 
 #[tokio::test]
 async fn test_scope_config_convenience_profiles_and_network_defaults() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from("convenience_profiles_scope");
 
     // Ensure strict profile is applied and persists through initialize.
@@ -349,7 +354,7 @@ async fn test_scope_config_convenience_profiles_and_network_defaults() {
 
 #[tokio::test]
 async fn test_scope_config_update_replaces_all_fields() {
-    let service = DefaultConsensusService::default();
+    let service = make_service();
     let scope = ScopeID::from("replace_all_fields_scope");
 
     // Initialize with P2P defaults

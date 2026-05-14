@@ -4,7 +4,7 @@ use hashgraph_like_consensus::{
     scope::ScopeID,
     service::DefaultConsensusService,
     session::ConsensusConfig,
-    signing::EthereumConsensusSigner,
+    signing::{ConsensusSignatureScheme, EthereumConsensusSigner},
     types::CreateProposalRequest,
     utils::{build_vote, validate_proposal},
 };
@@ -23,15 +23,11 @@ const EXPECTED_VOTERS_COUNT: u32 = 3;
 const VOTE_YES: bool = true;
 const VOTE_NO: bool = false;
 
-fn owner_bytes(signer: &PrivateKeySigner) -> Vec<u8> {
-    signer.address().as_slice().to_vec()
-}
-
 #[tokio::test]
 async fn test_received_hash_for_new_voter() {
-    let service = DefaultConsensusService::default();
+    let proposal_owner = wrap(PrivateKeySigner::random());
+    let service = DefaultConsensusService::new(proposal_owner.clone());
     let scope = ScopeID::from(SCOPE);
-    let proposal_owner = PrivateKeySigner::random();
 
     let proposal = service
         .create_proposal_with_config(
@@ -39,7 +35,7 @@ async fn test_received_hash_for_new_voter() {
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
                 PROPOSAL_PAYLOAD,
-                owner_bytes(&proposal_owner),
+                proposal_owner.identity().to_vec(),
                 EXPECTED_VOTERS_COUNT,
                 EXPIRATION,
                 true,
@@ -51,12 +47,12 @@ async fn test_received_hash_for_new_voter() {
         .expect("proposal");
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, wrap(proposal_owner))
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES)
         .await
         .expect("proposal_owner vote");
 
-    let other_voter = PrivateKeySigner::random();
-    let vote = build_vote(&proposal, VOTE_YES, wrap(other_voter))
+    let other_voter = wrap(PrivateKeySigner::random());
+    let vote = build_vote(&proposal, VOTE_YES, &other_voter)
         .await
         .expect("second vote");
 
@@ -77,9 +73,9 @@ async fn test_received_hash_for_new_voter() {
 
 #[tokio::test]
 async fn test_parent_hash_for_same_voter() {
-    let service = DefaultConsensusService::default();
+    let proposal_owner = wrap(PrivateKeySigner::random());
+    let service = DefaultConsensusService::new(proposal_owner.clone());
     let scope = ScopeID::from(SCOPE);
-    let proposal_owner = PrivateKeySigner::random();
 
     let proposal = service
         .create_proposal_with_config(
@@ -87,7 +83,7 @@ async fn test_parent_hash_for_same_voter() {
             CreateProposalRequest::new(
                 PROPOSAL_NAME.to_string(),
                 PROPOSAL_PAYLOAD,
-                owner_bytes(&proposal_owner),
+                proposal_owner.identity().to_vec(),
                 EXPECTED_VOTERS_COUNT,
                 EXPIRATION,
                 true,
@@ -99,17 +95,12 @@ async fn test_parent_hash_for_same_voter() {
         .expect("proposal");
 
     let proposal = service
-        .cast_vote_and_get_proposal(
-            &scope,
-            proposal.proposal_id,
-            VOTE_YES,
-            wrap(proposal_owner.clone()),
-        )
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES)
         .await
         .expect("proposal_owner vote");
 
     // Create a second vote from the same voter to exercise parent_hash logic.
-    let second_vote = build_vote(&proposal, VOTE_NO, wrap(proposal_owner))
+    let second_vote = build_vote(&proposal, VOTE_NO, &proposal_owner)
         .await
         .expect("second vote");
 

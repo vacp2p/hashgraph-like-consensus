@@ -437,28 +437,28 @@ mod tests {
         let mut session = ConsensusSession::new(proposal, config);
 
         // Round 1 -> Round 2 (first vote)
-        let vote1 = build_vote(&session.proposal, true, wrap(signer1))
+        let vote1 = build_vote(&session.proposal, true, &wrap(signer1))
             .await
             .unwrap();
         session.add_vote(vote1).unwrap();
         assert_eq!(session.proposal.round, 2);
 
         // Stay at round 2 (second vote)
-        let vote2 = build_vote(&session.proposal, false, wrap(signer2))
+        let vote2 = build_vote(&session.proposal, false, &wrap(signer2))
             .await
             .unwrap();
         session.add_vote(vote2).unwrap();
         assert_eq!(session.proposal.round, 2);
 
         // Stay at round 2 (third vote)
-        let vote3 = build_vote(&session.proposal, true, wrap(signer3))
+        let vote3 = build_vote(&session.proposal, true, &wrap(signer3))
             .await
             .unwrap();
         session.add_vote(vote3).unwrap();
         assert_eq!(session.proposal.round, 2);
 
         // Stay at round 2 (fourth vote) - should succeed
-        let vote4 = build_vote(&session.proposal, true, wrap(signer4))
+        let vote4 = build_vote(&session.proposal, true, &wrap(signer4))
             .await
             .unwrap();
         session.add_vote(vote4).unwrap();
@@ -492,7 +492,7 @@ mod tests {
         let mut session = ConsensusSession::new(proposal, config);
 
         // Round 1 -> Round 2 (first vote, 1 vote total)
-        let vote1 = build_vote(&session.proposal, true, wrap(signer1))
+        let vote1 = build_vote(&session.proposal, true, &wrap(signer1))
             .await
             .unwrap();
         session.add_vote(vote1).unwrap();
@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(session.votes.len(), 1);
 
         // Round 2 -> Round 3 (second vote, 2 votes total) - should succeed
-        let vote2 = build_vote(&session.proposal, false, wrap(signer2))
+        let vote2 = build_vote(&session.proposal, false, &wrap(signer2))
             .await
             .unwrap();
         session.add_vote(vote2).unwrap();
@@ -508,7 +508,7 @@ mod tests {
         assert_eq!(session.votes.len(), 2);
 
         // Round 3 -> Round 4 (third vote, 3 votes total) - should succeed
-        let vote3 = build_vote(&session.proposal, true, wrap(signer3))
+        let vote3 = build_vote(&session.proposal, true, &wrap(signer3))
             .await
             .unwrap();
         session.add_vote(vote3).unwrap();
@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(session.votes.len(), 3);
 
         // Round 4 -> Round 5 (fourth vote, 4 votes total) - should succeed (dynamic limit = 4)
-        let vote4 = build_vote(&session.proposal, true, wrap(signer4))
+        let vote4 = build_vote(&session.proposal, true, &wrap(signer4))
             .await
             .unwrap();
         session.add_vote(vote4).unwrap();
@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(session.votes.len(), 4);
 
         // Fifth vote would exceed dynamic max_round_limit (=4 votes)
-        let vote5 = build_vote(&session.proposal, true, wrap(signer5))
+        let vote5 = build_vote(&session.proposal, true, &wrap(signer5))
             .await
             .unwrap();
         let err = session.add_vote(vote5).unwrap_err();
@@ -577,7 +577,7 @@ mod tests {
         let mut failed_session =
             ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub());
         failed_session.state = ConsensusState::Failed;
-        let vote = build_vote(&failed_session.proposal, true, wrap(signer.clone()))
+        let vote = build_vote(&failed_session.proposal, true, &wrap(signer.clone()))
             .await
             .unwrap();
         let err = failed_session.add_vote(vote).unwrap_err();
@@ -586,7 +586,7 @@ mod tests {
         // Finalized sessions return existing transition/result.
         let mut finalized_session = ConsensusSession::new(proposal, ConsensusConfig::gossipsub());
         finalized_session.state = ConsensusState::ConsensusReached(true);
-        let vote = build_vote(&finalized_session.proposal, true, wrap(signer))
+        let vote = build_vote(&finalized_session.proposal, true, &wrap(signer))
             .await
             .unwrap();
         let transition = finalized_session.add_vote(vote).unwrap();
@@ -624,10 +624,10 @@ mod tests {
 
         // Duplicate owners are rejected before chain/signature checks.
         let mut dup_session = ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub());
-        let vote1 = build_vote(&dup_session.proposal, true, wrap(signer.clone()))
+        let vote1 = build_vote(&dup_session.proposal, true, &wrap(signer.clone()))
             .await
             .unwrap();
-        let vote2 = build_vote(&dup_session.proposal, false, wrap(signer))
+        let vote2 = build_vote(&dup_session.proposal, false, &wrap(signer))
             .await
             .unwrap();
         let err = dup_session

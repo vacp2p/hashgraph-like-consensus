@@ -42,9 +42,9 @@ use alloy::signers::local::PrivateKeySigner;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let service = DefaultConsensusService::default();
-    let scope = ScopeID::from("example-scope");
     let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
+    let service = DefaultConsensusService::new(signer.clone());
+    let scope = ScopeID::from("example-scope");
 
     // Create a proposal
     let proposal = service
@@ -61,10 +61,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    // Cast a vote
-    let vote = service
-        .cast_vote(&scope, proposal.proposal_id, true, signer)
-        .await?;
+    // Cast a vote — the service uses its held signer.
+    let vote = service.cast_vote(&scope, proposal.proposal_id, true).await?;
     println!("Recorded vote {}", vote.vote_id);
 
     Ok(())
@@ -127,15 +125,20 @@ use hashgraph_like_consensus::{
     signing::EthereumConsensusSigner,
     storage::InMemoryConsensusStorage,
 };
+use alloy::signers::local::PrivateKeySigner;
 
 // Shared storage across all conversations.
 let storage = InMemoryConsensusStorage::<ScopeID>::new();
+
+// This peer's signer — built once and cloned into each conversation's service.
+let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
 
 // One service per conversation, each with its own event bus.
 let conv_a: ConsensusService<_, _, _, EthereumConsensusSigner> =
     ConsensusService::new_with_components(
         storage.clone(),                // shared backing data
         BroadcastEventBus::default(),   // private bus for this conversation
+        signer.clone(),                 // same identity in every conversation
         10,
     );
 
@@ -143,6 +146,7 @@ let conv_b: ConsensusService<_, _, _, EthereumConsensusSigner> =
     ConsensusService::new_with_components(
         storage.clone(),
         BroadcastEventBus::default(),
+        signer.clone(),
         10,
     );
 
@@ -175,7 +179,7 @@ orchestration. Your application is responsible for:
 | **Network propagation**              | The library performs no I/O. When you create a proposal or cast a vote, you must gossip it to peers yourself. When a message arrives from the network, call `process_incoming_proposal` or `process_incoming_vote`.                                |
 | **Timeout scheduling**               | The library does not spawn timers. You must schedule a timer for each proposal (using `consensus_timeout()` from the config) and call `handle_consensus_timeout` when it fires. Without this, proposals with offline voters stay `Active` forever. |
 | **`expected_voters_count` accuracy** | This value drives all threshold math (`ceil(2n/3)` quorum, silent peer counting). If it doesn't match the actual group size, consensus results will be wrong.                                                                                      |
-| **Signer management**                | You provide a `ConsensusSignatureScheme` value when casting a vote (e.g. `EthereumConsensusSigner::new(private_key)`). The library uses `identity()` for the voter address. Each identity may vote at most once per proposal.                       |
+| **Signer management**                | You construct each `ConsensusService` with the peer's `ConsensusSignatureScheme` value (e.g. `EthereumConsensusSigner::new(private_key)`). `cast_vote` uses that held signer. Each identity may vote at most once per proposal.                     |
 | **Proposal ID tracking**             | The library generates a `proposal_id` on creation. You must store it and pass it to every subsequent call (`cast_vote`, `handle_consensus_timeout`, etc.).                                                                                         |
 | **Session eviction awareness**       | The default service keeps at most 10 sessions per scope (configurable via `new_with_max_sessions`). Older sessions are silently dropped when the limit is exceeded. Archive results before they are evicted.                                       |
 
@@ -184,20 +188,29 @@ orchestration. Your application is responsible for:
 ### Creating a Service
 
 ```rust
-use hashgraph_like_consensus::service::{ConsensusService, DefaultConsensusService};
+use hashgraph_like_consensus::{
+    service::{ConsensusService, DefaultConsensusService},
+    signing::EthereumConsensusSigner,
+};
+use alloy::signers::local::PrivateKeySigner;
 
-// Default: in-memory storage, broadcast events, EthereumConsensusSigner scheme,
-// 10 max sessions per scope
-let service = DefaultConsensusService::default();
+let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
 
-// Custom session limit (still the Ethereum default scheme)
-let service = DefaultConsensusService::new_with_max_sessions(20);
+// In-memory storage + broadcast events + this peer's signer. 10 sessions per scope.
+let service = DefaultConsensusService::new(signer.clone());
 
-// Fully custom: plug in your own storage, event bus, and signature scheme
-// (the scheme is picked via the type — typically via a type alias)
+// Custom session limit (still the Ethereum default scheme).
+let service = DefaultConsensusService::new_with_max_sessions(signer.clone(), 20);
+
+// Fully custom: plug in your own storage, event bus, signer, and signature scheme.
 let service: ConsensusService<MyScope, MyStorage, MyEvents, MyScheme> =
-    ConsensusService::new_with_components(my_storage, my_event_bus, 10);
+    ConsensusService::new_with_components(my_storage, my_event_bus, my_signer, 10);
 ```
+
+`signer` is held inside the service and used for every outgoing vote — see
+[Casting and Processing Votes](#casting-and-processing-votes). Access via
+`service.signer()` if you need its identity bytes (e.g. for proposal owner
+fields).
 
 ### Configuring a Scope
 
@@ -264,20 +277,15 @@ service.process_incoming_proposal(&scope, proposal).await?;
 ### Casting and Processing Votes
 
 ```rust
-use hashgraph_like_consensus::signing::EthereumConsensusSigner;
-use alloy::signers::local::PrivateKeySigner;
+// Cast your vote (yes = true, no = false) using the service's held signer.
+let vote = service.cast_vote(&scope, proposal_id, true).await?;
 
-let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
-
-// Cast your vote (yes = true, no = false)
-let vote = service.cast_vote(&scope, proposal_id, true, signer.clone()).await?;
-
-// Cast a vote and get the updated proposal (useful for gossiping)
+// Cast a vote and get the updated proposal (useful for gossiping).
 let proposal = service
-    .cast_vote_and_get_proposal(&scope, proposal_id, true, signer)
+    .cast_vote_and_get_proposal(&scope, proposal_id, true)
     .await?;
 
-// Process a vote received from the network (uses the service's scheme to verify)
+// Process a vote received from the network (uses the service's scheme to verify).
 service.process_incoming_vote(&scope, vote).await?;
 ```
 
