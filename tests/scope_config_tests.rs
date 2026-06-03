@@ -17,26 +17,24 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_DOUBLE_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_SHORT_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[tokio::test]
-async fn test_scope_config_creation() {
+#[test]
+fn test_scope_config_creation() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE_NAME);
 
     // Initialize scope with P2P network and custom threshold
     service
         .scope(&scope)
-        .await
         .unwrap()
         .with_network_type(NetworkType::P2P)
         .with_threshold(0.75)
         .with_timeout(DEFAULT_DOUBLE_TIMEOUT)
         .with_liveness_criteria(true)
         .initialize()
-        .await
         .unwrap();
 
     // Verify the configuration was saved
-    let config = service.scope(&scope).await.unwrap().get_config();
+    let config = service.scope(&scope).unwrap().get_config();
 
     assert_eq!(config.network_type, NetworkType::P2P);
     assert_eq!(config.default_consensus_threshold, 0.75);
@@ -44,72 +42,64 @@ async fn test_scope_config_creation() {
     assert!(config.default_liveness_criteria_yes);
 }
 
-#[tokio::test]
-async fn test_scope_config_update() {
+#[test]
+fn test_scope_config_update() {
     let service = make_service();
     let scope = ScopeID::from("update_test_scope");
 
     // Initialize with default config
     service
         .scope(&scope)
-        .await
         .unwrap()
         .with_network_type(NetworkType::Gossipsub)
         .with_threshold(2.0 / 3.0)
         .with_timeout(DEFAULT_TIMEOUT)
         .initialize()
-        .await
         .unwrap();
 
     // Update only threshold
     service
         .scope(&scope)
-        .await
         .unwrap()
         .with_threshold(0.8)
         .update()
-        .await
         .unwrap();
 
     // Verify threshold was updated, but other fields remain unchanged
-    let config = service.scope(&scope).await.unwrap().get_config();
+    let config = service.scope(&scope).unwrap().get_config();
 
     assert_eq!(config.default_consensus_threshold, 0.8);
     assert_eq!(config.network_type, NetworkType::Gossipsub); // Should remain unchanged
     assert_eq!(config.default_timeout, DEFAULT_TIMEOUT); // Should remain unchanged
 }
 
-#[tokio::test]
-async fn test_scope_config_update_multiple_fields() {
+#[test]
+fn test_scope_config_update_multiple_fields() {
     let service = make_service();
     let scope = ScopeID::from("multi_update_scope");
 
     // Initialize with initial config
     service
         .scope(&scope)
-        .await
         .unwrap()
         .with_network_type(NetworkType::P2P)
         .with_threshold(0.6)
         .with_timeout(DEFAULT_SHORT_TIMEOUT)
         .initialize()
-        .await
         .unwrap();
 
     // Update multiple fields at once
     service
         .scope(&scope)
-        .await
         .unwrap()
         .with_threshold(0.9)
         .with_timeout(DEFAULT_DOUBLE_TIMEOUT)
         .with_liveness_criteria(false)
         .update()
-        .await
         .unwrap();
 
     // Verify all fields were updated
-    let config = service.scope(&scope).await.unwrap().get_config();
+    let config = service.scope(&scope).unwrap().get_config();
 
     assert_eq!(config.default_consensus_threshold, 0.9);
     assert_eq!(config.default_timeout, DEFAULT_DOUBLE_TIMEOUT);
@@ -117,22 +107,20 @@ async fn test_scope_config_update_multiple_fields() {
     assert_eq!(config.network_type, NetworkType::P2P); // Should remain unchanged
 }
 
-#[tokio::test]
-async fn test_scope_config_presets() {
+#[test]
+fn test_scope_config_presets() {
     let service = make_service();
     let scope = ScopeID::from("preset_test_scope");
 
     // Test P2P preset
     service
         .scope(&scope)
-        .await
         .unwrap()
         .p2p_preset()
         .initialize()
-        .await
         .unwrap();
 
-    let config = service.scope(&scope).await.unwrap().get_config();
+    let config = service.scope(&scope).unwrap().get_config();
 
     assert_eq!(config.network_type, NetworkType::P2P);
     assert_eq!(config.default_consensus_threshold, 2.0 / 3.0);
@@ -141,31 +129,27 @@ async fn test_scope_config_presets() {
     // Test Gossipsub preset
     service
         .scope(&scope)
-        .await
         .unwrap()
         .gossipsub_preset()
         .update()
-        .await
         .unwrap();
 
-    let config = service.scope(&scope).await.unwrap().get_config();
+    let config = service.scope(&scope).unwrap().get_config();
 
     assert_eq!(config.network_type, NetworkType::Gossipsub);
 }
 
-#[tokio::test]
-async fn test_scope_config_validation() {
+#[test]
+fn test_scope_config_validation() {
     let service = make_service();
     let scope = ScopeID::from("validation_test_scope");
 
     // Test invalid threshold (too high)
     let result = service
         .scope(&scope)
-        .await
         .unwrap()
         .with_threshold(1.5) // Invalid: > 1.0
-        .initialize()
-        .await;
+        .initialize();
 
     assert!(result.is_err());
     assert!(matches!(
@@ -176,22 +160,18 @@ async fn test_scope_config_validation() {
     // Test invalid threshold (negative)
     let result = service
         .scope(&scope)
-        .await
         .unwrap()
         .with_threshold(-0.1) // Invalid: < 0.0
-        .initialize()
-        .await;
+        .initialize();
 
     assert!(result.is_err());
 
     // Test invalid timeout (zero)
     let result = service
         .scope(&scope)
-        .await
         .unwrap()
         .with_timeout(Duration::from_secs(0)) // Invalid: must be > 0
-        .initialize()
-        .await;
+        .initialize();
 
     assert!(result.is_err());
     assert!(matches!(
@@ -200,13 +180,13 @@ async fn test_scope_config_validation() {
     ));
 }
 
-#[tokio::test]
-async fn test_scope_config_new_scope_uses_defaults() {
+#[test]
+fn test_scope_config_new_scope_uses_defaults() {
     let service = make_service();
     let scope = ScopeID::from("new_scope_defaults");
 
     // Get config for non-existent scope - should return defaults
-    let config = service.scope(&scope).await.unwrap().get_config();
+    let config = service.scope(&scope).unwrap().get_config();
 
     // Should have default values
     assert_eq!(config.network_type, NetworkType::Gossipsub);
@@ -215,8 +195,8 @@ async fn test_scope_config_new_scope_uses_defaults() {
     assert!(config.default_liveness_criteria_yes);
 }
 
-#[tokio::test]
-async fn test_max_rounds_override_zero_validation() {
+#[test]
+fn test_max_rounds_override_zero_validation() {
     let service = make_service();
     let scope_p2p = ScopeID::from("p2p_zero_rounds");
     let scope_gossipsub = ScopeID::from("gossipsub_zero_rounds");
@@ -225,31 +205,27 @@ async fn test_max_rounds_override_zero_validation() {
     // (0 triggers dynamic calculation based on consensus threshold)
     let result = service
         .scope(&scope_p2p)
-        .await
         .unwrap()
         .with_network_type(NetworkType::P2P)
         .with_max_rounds(Some(0))
-        .initialize()
-        .await;
+        .initialize();
 
     assert!(
         result.is_ok(),
         "max_rounds_override = Some(0) should be allowed for P2P networks"
     );
 
-    let config = service.scope(&scope_p2p).await.unwrap().get_config();
+    let config = service.scope(&scope_p2p).unwrap().get_config();
     assert_eq!(config.max_rounds_override, Some(0));
     assert_eq!(config.network_type, NetworkType::P2P);
 
     // Test that max_rounds_override = Some(0) is rejected for Gossipsub networks
     let result = service
         .scope(&scope_gossipsub)
-        .await
         .unwrap()
         .with_network_type(NetworkType::Gossipsub)
         .with_max_rounds(Some(0))
-        .initialize()
-        .await;
+        .initialize();
 
     assert!(
         result.is_err(),
@@ -261,8 +237,8 @@ async fn test_max_rounds_override_zero_validation() {
     ));
 }
 
-#[tokio::test]
-async fn create_proposal_with_config_preserves_override_timeout() {
+#[test]
+fn create_proposal_with_config_preserves_override_timeout() {
     let service = make_service();
     let scope = ScopeID::from("test_scope");
 
@@ -282,95 +258,82 @@ async fn create_proposal_with_config_preserves_override_timeout() {
 
     let proposal = service
         .create_proposal_with_config(&scope, request, Some(override_config))
-        .await
         .unwrap();
 
     let config = service
         .storage()
         .get_proposal_config(&scope, proposal.proposal_id)
-        .await
         .unwrap();
 
     assert_eq!(config.consensus_timeout(), Duration::from_secs(120));
 }
 
-#[tokio::test]
-async fn test_scope_config_convenience_profiles_and_network_defaults() {
+#[test]
+fn test_scope_config_convenience_profiles_and_network_defaults() {
     let service = make_service();
     let scope = ScopeID::from("convenience_profiles_scope");
 
     // Ensure strict profile is applied and persists through initialize.
     service
         .scope(&scope)
-        .await
         .unwrap()
         .strict_consensus()
         .initialize()
-        .await
         .unwrap();
 
-    let strict = service.scope(&scope).await.unwrap().get_config();
+    let strict = service.scope(&scope).unwrap().get_config();
     assert_eq!(strict.default_consensus_threshold, 0.9);
 
     // Ensure fast profile updates threshold+timeout.
     service
         .scope(&scope)
-        .await
         .unwrap()
         .fast_consensus()
         .update()
-        .await
         .unwrap();
 
-    let fast = service.scope(&scope).await.unwrap().get_config();
+    let fast = service.scope(&scope).unwrap().get_config();
     assert_eq!(fast.default_consensus_threshold, 0.6);
     assert_eq!(fast.default_timeout, Duration::from_secs(30));
 
     // Exercise both branches of with_network_defaults.
     service
         .scope(&scope)
-        .await
         .unwrap()
         .with_network_defaults(NetworkType::P2P)
         .update()
-        .await
         .unwrap();
 
-    let p2p = service.scope(&scope).await.unwrap().get_config();
+    let p2p = service.scope(&scope).unwrap().get_config();
     assert_eq!(p2p.network_type, NetworkType::P2P);
 
     service
         .scope(&scope)
-        .await
         .unwrap()
         .with_network_defaults(NetworkType::Gossipsub)
         .update()
-        .await
         .unwrap();
 
-    let gossipsub = service.scope(&scope).await.unwrap().get_config();
+    let gossipsub = service.scope(&scope).unwrap().get_config();
     assert_eq!(gossipsub.network_type, NetworkType::Gossipsub);
 }
 
-#[tokio::test]
-async fn test_scope_config_update_replaces_all_fields() {
+#[test]
+fn test_scope_config_update_replaces_all_fields() {
     let service = make_service();
     let scope = ScopeID::from("replace_all_fields_scope");
 
     // Initialize with P2P defaults
     service
         .scope(&scope)
-        .await
         .unwrap()
         .with_network_type(NetworkType::P2P)
         .initialize()
-        .await
         .unwrap();
 
     // Update all fields at once
     service
         .scope(&scope)
-        .await
         .unwrap()
         .with_network_type(NetworkType::Gossipsub)
         .with_threshold(0.8)
@@ -378,10 +341,9 @@ async fn test_scope_config_update_replaces_all_fields() {
         .with_liveness_criteria(false)
         .with_max_rounds(Some(7))
         .update()
-        .await
         .unwrap();
 
-    let built = service.scope(&scope).await.unwrap().get_config();
+    let built = service.scope(&scope).unwrap().get_config();
     assert_eq!(built.network_type, NetworkType::Gossipsub);
     assert_eq!(built.default_consensus_threshold, 0.8);
     assert_eq!(built.default_timeout, Duration::from_secs(90));

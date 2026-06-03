@@ -29,9 +29,8 @@ where
     ///
     /// Returns counts of total, active, failed, and finalized proposals.
     /// Useful for monitoring and dashboards.
-    pub async fn get_scope_stats(&self, scope: &Scope) -> ConsensusStats {
+    pub fn get_scope_stats(&self, scope: &Scope) -> ConsensusStats {
         self.list_scope_sessions(scope)
-            .await
             .map(|scope_sessions| {
                 let total_sessions = scope_sessions.len();
                 let active_sessions = scope_sessions.iter().filter(|s| s.is_active()).count();

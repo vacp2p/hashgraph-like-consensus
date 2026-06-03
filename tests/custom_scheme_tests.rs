@@ -49,7 +49,7 @@ impl ConsensusSignatureScheme for StubSigner {
         &self.identity
     }
 
-    async fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, ConsensusSchemeError> {
+    fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, ConsensusSchemeError> {
         Ok(Self::expected_signature(&self.identity, payload))
     }
 
@@ -84,8 +84,8 @@ fn peer_service(
     StubService::new_with_components(storage.clone(), bus.clone(), signer, 10)
 }
 
-#[tokio::test]
-async fn stub_scheme_reaches_consensus_without_ethereum_types() {
+#[test]
+fn stub_scheme_reaches_consensus_without_ethereum_types() {
     let storage = InMemoryConsensusStorage::<ScopeID>::new();
     let bus = BroadcastEventBus::<ScopeID>::default();
     let scope = ScopeID::from("stub-scope");
@@ -108,26 +108,21 @@ async fn stub_scheme_reaches_consensus_without_ethereum_types() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     owner
         .cast_vote(&scope, proposal.proposal_id, true)
-        .await
         .expect("owner vote");
     voter_two
         .cast_vote(&scope, proposal.proposal_id, true)
-        .await
         .expect("voter two");
     voter_three
         .cast_vote(&scope, proposal.proposal_id, true)
-        .await
         .expect("voter three");
 
     let session = owner
         .storage()
         .get_session(&scope, proposal.proposal_id)
-        .await
         .expect("get session")
         .expect("session exists");
     assert!(
@@ -136,8 +131,8 @@ async fn stub_scheme_reaches_consensus_without_ethereum_types() {
     );
 }
 
-#[tokio::test]
-async fn stub_scheme_rejects_forged_signature() {
+#[test]
+fn stub_scheme_rejects_forged_signature() {
     let storage = InMemoryConsensusStorage::<ScopeID>::new();
     let bus = BroadcastEventBus::<ScopeID>::default();
     let scope = ScopeID::from("stub-scope-forge");
@@ -159,16 +154,14 @@ async fn stub_scheme_rejects_forged_signature() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
-    let mut vote = build_vote(&proposal, true, &voter).await.expect("vote");
+    let mut vote = build_vote(&proposal, true, &voter).expect("vote");
     // Tamper with the signature so verify() returns false.
     vote.signature.iter_mut().for_each(|b| *b ^= 0xFF);
 
     let err = owner
         .process_incoming_vote(&scope, vote)
-        .await
         .expect_err("forged signature must be rejected");
     assert!(
         matches!(

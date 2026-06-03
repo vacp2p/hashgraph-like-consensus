@@ -2,7 +2,7 @@
 //!
 use alloy::primitives::Address;
 use alloy::signers::local::PrivateKeySigner;
-use alloy_signer::{Signature, Signer};
+use alloy_signer::{Signature, SignerSync};
 
 use super::{ConsensusSchemeError, ConsensusSignatureScheme};
 
@@ -55,11 +55,10 @@ impl ConsensusSignatureScheme for EthereumConsensusSigner {
         &self.address_bytes
     }
 
-    async fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, ConsensusSchemeError> {
+    fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, ConsensusSchemeError> {
         let signature = self
             .inner
-            .sign_message(payload)
-            .await
+            .sign_message_sync(payload)
             .map_err(|e| ConsensusSchemeError::Sign(e.to_string()))?;
         Ok(signature.as_bytes().to_vec())
     }

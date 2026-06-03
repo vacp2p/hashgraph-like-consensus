@@ -413,8 +413,8 @@ mod tests {
         EthereumConsensusSigner::new(signer)
     }
 
-    #[tokio::test]
-    async fn enforce_max_rounds_gossipsub() {
+    #[test]
+    fn enforce_max_rounds_gossipsub() {
         // Gossipsub: max_rounds = 2 means round 1 (proposal) and round 2 (all votes)
         // Should allow multiple votes in round 2, but not exceed round 2
         let signer1 = PrivateKeySigner::random();
@@ -437,37 +437,29 @@ mod tests {
         let mut session = ConsensusSession::new(proposal, config);
 
         // Round 1 -> Round 2 (first vote)
-        let vote1 = build_vote(&session.proposal, true, &wrap(signer1))
-            .await
-            .unwrap();
+        let vote1 = build_vote(&session.proposal, true, &wrap(signer1)).unwrap();
         session.add_vote(vote1).unwrap();
         assert_eq!(session.proposal.round, 2);
 
         // Stay at round 2 (second vote)
-        let vote2 = build_vote(&session.proposal, false, &wrap(signer2))
-            .await
-            .unwrap();
+        let vote2 = build_vote(&session.proposal, false, &wrap(signer2)).unwrap();
         session.add_vote(vote2).unwrap();
         assert_eq!(session.proposal.round, 2);
 
         // Stay at round 2 (third vote)
-        let vote3 = build_vote(&session.proposal, true, &wrap(signer3))
-            .await
-            .unwrap();
+        let vote3 = build_vote(&session.proposal, true, &wrap(signer3)).unwrap();
         session.add_vote(vote3).unwrap();
         assert_eq!(session.proposal.round, 2);
 
         // Stay at round 2 (fourth vote) - should succeed
-        let vote4 = build_vote(&session.proposal, true, &wrap(signer4))
-            .await
-            .unwrap();
+        let vote4 = build_vote(&session.proposal, true, &wrap(signer4)).unwrap();
         session.add_vote(vote4).unwrap();
         assert_eq!(session.proposal.round, 2);
         assert_eq!(session.votes.len(), 4);
     }
 
-    #[tokio::test]
-    async fn enforce_max_rounds_p2p() {
+    #[test]
+    fn enforce_max_rounds_p2p() {
         // P2P defaults: max_rounds = 0 triggers dynamic calculation based on expected voters.
         // For threshold=2/3 and expected_voters=5, max_round_limit = ceil(2n/3) = 4 votes.
         // Round 1 = 0 votes, Round 2 = 1 vote, ... Round 5 = 4 votes.
@@ -492,41 +484,31 @@ mod tests {
         let mut session = ConsensusSession::new(proposal, config);
 
         // Round 1 -> Round 2 (first vote, 1 vote total)
-        let vote1 = build_vote(&session.proposal, true, &wrap(signer1))
-            .await
-            .unwrap();
+        let vote1 = build_vote(&session.proposal, true, &wrap(signer1)).unwrap();
         session.add_vote(vote1).unwrap();
         assert_eq!(session.proposal.round, 2);
         assert_eq!(session.votes.len(), 1);
 
         // Round 2 -> Round 3 (second vote, 2 votes total) - should succeed
-        let vote2 = build_vote(&session.proposal, false, &wrap(signer2))
-            .await
-            .unwrap();
+        let vote2 = build_vote(&session.proposal, false, &wrap(signer2)).unwrap();
         session.add_vote(vote2).unwrap();
         assert_eq!(session.proposal.round, 3);
         assert_eq!(session.votes.len(), 2);
 
         // Round 3 -> Round 4 (third vote, 3 votes total) - should succeed
-        let vote3 = build_vote(&session.proposal, true, &wrap(signer3))
-            .await
-            .unwrap();
+        let vote3 = build_vote(&session.proposal, true, &wrap(signer3)).unwrap();
         session.add_vote(vote3).unwrap();
         assert_eq!(session.proposal.round, 4);
         assert_eq!(session.votes.len(), 3);
 
         // Round 4 -> Round 5 (fourth vote, 4 votes total) - should succeed (dynamic limit = 4)
-        let vote4 = build_vote(&session.proposal, true, &wrap(signer4))
-            .await
-            .unwrap();
+        let vote4 = build_vote(&session.proposal, true, &wrap(signer4)).unwrap();
         session.add_vote(vote4).unwrap();
         assert_eq!(session.proposal.round, 5);
         assert_eq!(session.votes.len(), 4);
 
         // Fifth vote would exceed dynamic max_round_limit (=4 votes)
-        let vote5 = build_vote(&session.proposal, true, &wrap(signer5))
-            .await
-            .unwrap();
+        let vote5 = build_vote(&session.proposal, true, &wrap(signer5)).unwrap();
         let err = session.add_vote(vote5).unwrap_err();
         assert!(matches!(err, ConsensusError::MaxRoundsExceeded));
     }
@@ -559,8 +541,8 @@ mod tests {
         assert_eq!(explicit.max_round_limit(100), 7);
     }
 
-    #[tokio::test]
-    async fn add_vote_rejects_non_active_and_reports_reached_when_finalized() {
+    #[test]
+    fn add_vote_rejects_non_active_and_reports_reached_when_finalized() {
         let signer = PrivateKeySigner::random();
         let request = CreateProposalRequest::new(
             "Test".into(),
@@ -577,18 +559,14 @@ mod tests {
         let mut failed_session =
             ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub());
         failed_session.state = ConsensusState::Failed;
-        let vote = build_vote(&failed_session.proposal, true, &wrap(signer.clone()))
-            .await
-            .unwrap();
+        let vote = build_vote(&failed_session.proposal, true, &wrap(signer.clone())).unwrap();
         let err = failed_session.add_vote(vote).unwrap_err();
         assert!(matches!(err, ConsensusError::SessionNotActive));
 
         // Finalized sessions return existing transition/result.
         let mut finalized_session = ConsensusSession::new(proposal, ConsensusConfig::gossipsub());
         finalized_session.state = ConsensusState::ConsensusReached(true);
-        let vote = build_vote(&finalized_session.proposal, true, &wrap(signer))
-            .await
-            .unwrap();
+        let vote = build_vote(&finalized_session.proposal, true, &wrap(signer)).unwrap();
         let transition = finalized_session.add_vote(vote).unwrap();
         assert!(matches!(
             transition,
@@ -596,8 +574,8 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn initialize_with_votes_non_active_duplicate_and_zero_votes_paths() {
+    #[test]
+    fn initialize_with_votes_non_active_duplicate_and_zero_votes_paths() {
         let signer = PrivateKeySigner::random();
         let request = CreateProposalRequest::new(
             "Test".into(),
@@ -624,12 +602,8 @@ mod tests {
 
         // Duplicate owners are rejected before chain/signature checks.
         let mut dup_session = ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub());
-        let vote1 = build_vote(&dup_session.proposal, true, &wrap(signer.clone()))
-            .await
-            .unwrap();
-        let vote2 = build_vote(&dup_session.proposal, false, &wrap(signer))
-            .await
-            .unwrap();
+        let vote1 = build_vote(&dup_session.proposal, true, &wrap(signer.clone())).unwrap();
+        let vote2 = build_vote(&dup_session.proposal, false, &wrap(signer)).unwrap();
         let err = dup_session
             .initialize_with_votes::<EthereumConsensusSigner>(
                 vec![vote1, vote2],

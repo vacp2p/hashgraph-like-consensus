@@ -1,7 +1,9 @@
 use alloy::signers::local::PrivateKeySigner;
-use futures::future::join_all;
-use std::{sync::Arc, time::Duration};
-use tokio::{spawn, sync::Barrier, time::sleep};
+use std::{
+    sync::{Arc, Barrier},
+    thread,
+    time::Duration,
+};
 
 use hashgraph_like_consensus::{
     error::ConsensusError,
@@ -40,8 +42,8 @@ const EXPECTED_VOTERS_COUNT_5: u32 = 5;
 const EXPECTED_PROPOSALS_COUNT_5: u32 = 5;
 
 // Verifies 10 parallel votes succeed under gossipsub and reach consensus;
-#[tokio::test]
-async fn test_concurrent_vote_casting() {
+#[test]
+fn test_concurrent_vote_casting() {
     let storage = InMemoryConsensusStorage::<ScopeID>::new();
     let bus = BroadcastEventBus::<ScopeID>::default();
     let scope = ScopeID::from(SCOPE);
@@ -64,7 +66,6 @@ async fn test_concurrent_vote_casting() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     let proposal_id = proposal.proposal_id;
@@ -77,23 +78,20 @@ async fn test_concurrent_vote_casting() {
         let bus = bus.clone();
         let scope_clone = scope.clone();
         let barrier_clone = Arc::clone(&barrier);
-        let handle = spawn(async move {
-            barrier_clone.wait().await;
+        let handle = thread::spawn(move || {
+            barrier_clone.wait();
             let peer = peer_service(&storage, &bus, wrap(PrivateKeySigner::random()));
-            peer.cast_vote(&scope_clone, proposal_id, i % 2 == 0).await
+            peer.cast_vote(&scope_clone, proposal_id, i % 2 == 0)
         });
         handles.push(handle);
     }
 
-    let results: Vec<_> = join_all(handles).await;
+    let results: Vec<_> = handles.into_iter().map(|h| h.join()).collect();
     let success_count = results.iter().filter(|r| r.is_ok()).count();
     assert_eq!(success_count, 10, "All 10 unique votes should succeed");
 
-    sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
-    let result = owner
-        .storage()
-        .get_consensus_result(&scope, proposal_id)
-        .await;
+    thread::sleep(Duration::from_millis(EXPIRATION_WAIT_TIME));
+    let result = owner.storage().get_consensus_result(&scope, proposal_id);
     assert!(
         result.is_ok(),
         "Consensus should be reached with concurrent votes"
@@ -101,8 +99,8 @@ async fn test_concurrent_vote_casting() {
 }
 
 // Test concurrent proposal creation and vote processing
-#[tokio::test]
-async fn test_concurrent_proposal_operations() {
+#[test]
+fn test_concurrent_proposal_operations() {
     let storage = InMemoryConsensusStorage::<ScopeID>::new();
     let bus = BroadcastEventBus::<ScopeID>::default();
     let scope = ScopeID::from(SCOPE);
@@ -112,28 +110,26 @@ async fn test_concurrent_proposal_operations() {
         let storage = storage.clone();
         let bus = bus.clone();
         let scope_clone = scope.clone();
-        let handle = spawn(async move {
+        let handle = thread::spawn(move || {
             let proposal_owner = peer_service(&storage, &bus, wrap(PrivateKeySigner::random()));
-            proposal_owner
-                .create_proposal_with_config(
-                    &scope_clone,
-                    CreateProposalRequest::new(
-                        format!("Proposal {i}"),
-                        PROPOSAL_PAYLOAD,
-                        proposal_owner.signer().identity().to_vec(),
-                        EXPECTED_VOTERS_COUNT_3,
-                        EXPIRATION,
-                        true,
-                    )
-                    .expect("valid proposal request"),
-                    Some(ConsensusConfig::gossipsub()),
+            proposal_owner.create_proposal_with_config(
+                &scope_clone,
+                CreateProposalRequest::new(
+                    format!("Proposal {i}"),
+                    PROPOSAL_PAYLOAD,
+                    proposal_owner.signer().identity().to_vec(),
+                    EXPECTED_VOTERS_COUNT_3,
+                    EXPIRATION,
+                    true,
                 )
-                .await
+                .expect("valid proposal request"),
+                Some(ConsensusConfig::gossipsub()),
+            )
         });
         handles.push(handle);
     }
 
-    let results: Vec<_> = join_all(handles).await;
+    let results: Vec<_> = handles.into_iter().map(|h| h.join()).collect();
     let success_count = results
         .iter()
         .filter(|r| r.is_ok() && r.as_ref().unwrap().is_ok())
@@ -145,8 +141,8 @@ async fn test_concurrent_proposal_operations() {
 }
 
 // Test that duplicate votes are properly rejected
-#[tokio::test]
-async fn test_concurrent_duplicate_vote_rejection() {
+#[test]
+fn test_concurrent_duplicate_vote_rejection() {
     let storage = InMemoryConsensusStorage::<ScopeID>::new();
     let bus = BroadcastEventBus::<ScopeID>::default();
     let scope = ScopeID::from(SCOPE);
@@ -170,7 +166,6 @@ async fn test_concurrent_duplicate_vote_rejection() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     let proposal_id = proposal.proposal_id;
@@ -183,11 +178,11 @@ async fn test_concurrent_duplicate_vote_rejection() {
     for _ in 0..EXPECTED_VOTERS_COUNT_5 {
         let voter = Arc::clone(&voter);
         let scope_clone = scope.clone();
-        let handle = spawn(async move { voter.cast_vote(&scope_clone, proposal_id, true).await });
+        let handle = thread::spawn(move || voter.cast_vote(&scope_clone, proposal_id, true));
         handles.push(handle);
     }
 
-    let results: Vec<_> = join_all(handles).await;
+    let results: Vec<_> = handles.into_iter().map(|h| h.join()).collect();
     let vote_results: Vec<_> = results
         .into_iter()
         .map(|r| r.expect("Task should complete"))

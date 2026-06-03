@@ -60,7 +60,7 @@
 //! };
 //! use alloy::signers::local::PrivateKeySigner;
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
 //! let service = DefaultConsensusService::new(signer.clone());
 //! let scope = ScopeID::from("my-scope");
@@ -76,10 +76,9 @@
 //!             60,   // expiration (seconds from now)
 //!             true, // liveness: silent peers count as YES at timeout
 //!         )?,
-//!     )
-//!     .await?;
+//!     )?;
 //!
-//! let vote = service.cast_vote(&scope, proposal.proposal_id, true).await?;
+//! let vote = service.cast_vote(&scope, proposal.proposal_id, true)?;
 //! # Ok(())
 //! # }
 //! ```

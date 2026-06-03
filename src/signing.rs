@@ -18,9 +18,9 @@
 //! [`Vote::signature`]: crate::protos::consensus::v1::Vote::signature
 //! [`DefaultConsensusService`]: crate::service::DefaultConsensusService
 
-use std::future::Future;
-
+#[cfg(feature = "ethereum")]
 mod ethereum;
+#[cfg(feature = "ethereum")]
 pub use ethereum::EthereumConsensusSigner;
 
 /// A signature scheme that the consensus service uses to sign and verify votes.
@@ -55,10 +55,7 @@ pub trait ConsensusSignatureScheme: Clone + Send + Sync + 'static {
     /// Sign `payload` and return the raw signature bytes.
     ///
     /// Length and encoding are scheme-specific.
-    fn sign(
-        &self,
-        payload: &[u8],
-    ) -> impl Future<Output = Result<Vec<u8>, ConsensusSchemeError>> + Send;
+    fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, ConsensusSchemeError>;
 
     /// Verify that `signature` over `payload` was produced by the holder of
     /// `identity`.
