@@ -1,12 +1,17 @@
-use tokio::sync::broadcast;
+use std::sync::{
+    Arc,
+    mpsc::{self, Receiver, SyncSender, TrySendError},
+};
+
+use parking_lot::Mutex;
 
 use crate::{scope::ConsensusScope, types::ConsensusEvent};
 
 /// Trait for broadcasting consensus events to subscribers.
 ///
 /// Implement this to use your own event system (message queue, webhooks, etc.).
-/// The default `BroadcastEventBus` uses Tokio's broadcast channel, which works
-/// well for in-process event distribution.
+/// The default `BroadcastEventBus` fans out over standard-library channels, which
+/// works well for in-process event distribution.
 pub trait ConsensusEventBus<Scope>: Clone + Send + Sync + 'static
 where
     Scope: ConsensusScope,
@@ -20,17 +25,19 @@ where
     fn publish(&self, scope: Scope, event: ConsensusEvent);
 }
 
-/// Default event bus implementation using Tokio's broadcast channel.
+type Subscribers<Scope> = Arc<Mutex<Vec<SyncSender<(Scope, ConsensusEvent)>>>>;
+
+/// Sends every event to all current subscribers in-process.
 ///
-/// This broadcasts events to all subscribers within the same process. Events are sent
-/// to all active subscribers, and late subscribers miss events that occurred before
-/// they subscribed. Perfect for in-process event distribution.
+/// Each subscriber gets its own channel. If a subscriber joins late, it misses earlier events.
+/// If a subscriber's buffer is full, it simply misses new events without blocking.
 #[derive(Clone)]
 pub struct BroadcastEventBus<Scope>
 where
     Scope: ConsensusScope,
 {
-    sender: broadcast::Sender<(Scope, ConsensusEvent)>,
+    capacity: usize,
+    subscribers: Subscribers<Scope>,
 }
 
 impl<Scope> BroadcastEventBus<Scope>
@@ -39,11 +46,13 @@ where
 {
     /// Create a new broadcast event bus with a custom max_queued_events size.
     ///
-    /// The max_queued_events size determines how many events can be queued before subscribers
-    /// start missing events. Default is 1000.
+    /// The max_queued_events size determines how many events can be buffered per
+    /// subscriber before that subscriber starts missing events. Default is 1000.
     pub fn new(max_queued_events: usize) -> Self {
-        let (sender, _) = broadcast::channel(max_queued_events);
-        Self { sender }
+        Self {
+            capacity: max_queued_events,
+            subscribers: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 }
 
@@ -60,13 +69,24 @@ impl<Scope> ConsensusEventBus<Scope> for BroadcastEventBus<Scope>
 where
     Scope: ConsensusScope,
 {
-    type Receiver = broadcast::Receiver<(Scope, ConsensusEvent)>;
+    type Receiver = Receiver<(Scope, ConsensusEvent)>;
 
     fn subscribe(&self) -> Self::Receiver {
-        self.sender.subscribe()
+        let (sender, receiver) = mpsc::sync_channel(self.capacity);
+        self.subscribers.lock().push(sender);
+        receiver
     }
 
     fn publish(&self, scope: Scope, event: ConsensusEvent) {
-        let _ = self.sender.send((scope, event));
+        let mut subscribers = self.subscribers.lock();
+        // Deliver to every live subscriber; drop senders whose receiver is gone,
+        // and skip (without blocking) any subscriber whose buffer is full.
+        subscribers.retain(
+            |sender| match sender.try_send((scope.clone(), event.clone())) {
+                Ok(()) => true,
+                Err(TrySendError::Full(_)) => true,
+                Err(TrySendError::Disconnected(_)) => false,
+            },
+        );
     }
 }

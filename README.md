@@ -29,6 +29,15 @@ Add to your `Cargo.toml`:
 hashgraph-like-consensus = { git = "https://github.com/vacp2p/hashgraph-like-consensus" }
 ```
 
+The default `ethereum` feature bundles the alloy-backed `EthereumConsensusSigner`
+and `DefaultConsensusService`. If you supply your own `ConsensusSignatureScheme`,
+disable it to drop the alloy dependency:
+
+```toml
+[dependencies]
+hashgraph-like-consensus = { git = "...", default-features = false }
+```
+
 ## Quick Start
 
 ```rust
@@ -40,29 +49,26 @@ use hashgraph_like_consensus::{
 };
 use alloy::signers::local::PrivateKeySigner;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
     let service = DefaultConsensusService::new(signer.clone());
     let scope = ScopeID::from("example-scope");
 
     // Create a proposal
-    let proposal = service
-        .create_proposal(
-            &scope,
-            CreateProposalRequest::new(
-                "Upgrade contract".into(),   // name
-                b"Switch to v2".to_vec(),     // payload (bytes)
-                signer.identity().to_vec(),  // owner
-                3,                           // expected voters
-                60,                          // expiration (seconds from now)
-                true,                        // liveness: silent peers count as YES at timeout
-            )?,
-        )
-        .await?;
+    let proposal = service.create_proposal(
+        &scope,
+        CreateProposalRequest::new(
+            "Upgrade contract".into(),   // name
+            b"Switch to v2".to_vec(),     // payload (bytes)
+            signer.identity().to_vec(),  // owner
+            3,                           // expected voters
+            60,                          // expiration (seconds from now)
+            true,                        // liveness: silent peers count as YES at timeout
+        )?,
+    )?;
 
     // Cast a vote — the service uses its held signer.
-    let vote = service.cast_vote(&scope, proposal.proposal_id, true).await?;
+    let vote = service.cast_vote(&scope, proposal.proposal_id, true)?;
     println!("Recorded vote {}", vote.vote_id);
 
     Ok(())
@@ -151,8 +157,8 @@ let conv_b: ConsensusService<_, _, _, EthereumConsensusSigner> =
     );
 
 // Each conversation's subscribers only see its own events — no filtering needed.
-let mut events_a = conv_a.event_bus().subscribe();
-let mut events_b = conv_b.event_bus().subscribe();
+let events_a = conv_a.event_bus().subscribe();
+let events_b = conv_b.event_bus().subscribe();
 ```
 
 The same shape works for DB-backed storage: build one `Pool`/connection-bearing
@@ -227,66 +233,58 @@ let scope = ScopeID::from("team_votes");
 
 // Initialize with the builder
 service
-    .scope(&scope)
-    .await?
+    .scope(&scope)?
     .with_network_type(NetworkType::P2P)
     .with_threshold(0.75)
     .with_timeout(Duration::from_secs(120))
     .with_liveness_criteria(false)
-    .initialize()
-    .await?;
+    .initialize()?;
 
 // Update later (single field)
 service
-    .scope(&scope)
-    .await?
+    .scope(&scope)?
     .with_threshold(0.8)
-    .update()
-    .await?;
+    .update()?;
 ```
 
 Built-in presets are also available:
 
 ```rust
 // High confidence (threshold = 0.9)
-service.scope(&scope).await?.strict_consensus().initialize().await?;
+service.scope(&scope)?.strict_consensus().initialize()?;
 
 // Low latency (threshold = 0.6, timeout = 30 s)
-service.scope(&scope).await?.fast_consensus().initialize().await?;
+service.scope(&scope)?.fast_consensus().initialize()?;
 ```
 
 ### Working with Proposals
 
 ```rust
 // Create a proposal
-let proposal = service
-    .create_proposal(&scope, CreateProposalRequest::new(
-        "Upgrade contract".into(),
-        b"Switch to v2".to_vec(),
-        owner_address,
-        3,     // expected voters
-        60,    // expiration (seconds from now)
-        true,  // liveness: silent peers count as YES at timeout
-    )?)
-    .await?;
+let proposal = service.create_proposal(&scope, CreateProposalRequest::new(
+    "Upgrade contract".into(),
+    b"Switch to v2".to_vec(),
+    owner_address,
+    3,     // expected voters
+    60,    // expiration (seconds from now)
+    true,  // liveness: silent peers count as YES at timeout
+)?)?;
 
 // Process a proposal received from the network
-service.process_incoming_proposal(&scope, proposal).await?;
+service.process_incoming_proposal(&scope, proposal)?;
 ```
 
 ### Casting and Processing Votes
 
 ```rust
 // Cast your vote (yes = true, no = false) using the service's held signer.
-let vote = service.cast_vote(&scope, proposal_id, true).await?;
+let vote = service.cast_vote(&scope, proposal_id, true)?;
 
 // Cast a vote and get the updated proposal (useful for gossiping).
-let proposal = service
-    .cast_vote_and_get_proposal(&scope, proposal_id, true)
-    .await?;
+let proposal = service.cast_vote_and_get_proposal(&scope, proposal_id, true)?;
 
 // Process a vote received from the network (uses the service's scheme to verify).
-service.process_incoming_vote(&scope, vote).await?;
+service.process_incoming_vote(&scope, vote)?;
 ```
 
 ### Reading State (via Storage)
@@ -297,19 +295,19 @@ All reads go through `service.storage()`:
 use hashgraph_like_consensus::storage::ConsensusStorage;
 
 // Get the consensus result for a proposal (Ok(true) = YES, Ok(false) = NO)
-let result: bool = service.storage().get_consensus_result(&scope, proposal_id).await?;
+let result: bool = service.storage().get_consensus_result(&scope, proposal_id)?;
 
 // Get a proposal by ID
-let proposal = service.storage().get_proposal(&scope, proposal_id).await?;
+let proposal = service.storage().get_proposal(&scope, proposal_id)?;
 
 // List active proposals (empty Vec if none)
-let active: Vec<Proposal> = service.storage().get_active_proposals(&scope).await?;
+let active: Vec<Proposal> = service.storage().get_active_proposals(&scope)?;
 
 // List finalized proposals (proposal_id -> result)
-let reached: HashMap<u32, bool> = service.storage().get_reached_proposals(&scope).await?;
+let reached: HashMap<u32, bool> = service.storage().get_reached_proposals(&scope)?;
 
 // Delete all state for a scope (e.g. when a user leaves a group)
-service.storage().delete_scope(&scope).await?;
+service.storage().delete_scope(&scope)?;
 ```
 
 ### Handling Timeouts
@@ -331,10 +329,10 @@ The only case where timeout produces no result is a **tie** (equal YES and NO we
 after counting silent peers), which marks the session as failed.
 
 ```rust
-// Schedule a timeout (typically via tokio::time::sleep)
-tokio::time::sleep(config.consensus_timeout()).await;
+// Drive the timer however your app prefers, then call the handler when it fires.
+std::thread::sleep(config.consensus_timeout());
 
-match service.handle_consensus_timeout(&scope, proposal_id).await {
+match service.handle_consensus_timeout(&scope, proposal_id) {
     Ok(true)  => println!("Consensus: YES"),
     Ok(false) => println!("Consensus: NO"),
     Err(ConsensusError::InsufficientVotesAtTimeout) => {
@@ -353,10 +351,10 @@ actual votes — silent peers are not counted until timeout.
 use hashgraph_like_consensus::events::ConsensusEventBus;
 use hashgraph_like_consensus::types::ConsensusEvent;
 
-let mut rx = service.event_bus().subscribe();
+let rx = service.event_bus().subscribe();
 
-tokio::spawn(async move {
-    while let Ok((scope, event)) = rx.recv().await {
+std::thread::spawn(move || {
+    while let Ok((scope, event)) = rx.recv() {
         match event {
             ConsensusEvent::ConsensusReached { proposal_id, result, timestamp } => {
                 println!("Proposal {} -> {}", proposal_id, if result { "YES" } else { "NO" });
@@ -372,7 +370,7 @@ tokio::spawn(async move {
 ### Statistics
 
 ```rust
-let stats = service.get_scope_stats(&scope).await;
+let stats = service.get_scope_stats(&scope);
 println!(
     "Active: {}, Reached: {}, Failed: {}",
     stats.active_sessions, stats.consensus_reached, stats.failed_sessions
@@ -430,13 +428,12 @@ use hashgraph_like_consensus::signing::{
     ConsensusSchemeError, ConsensusSignatureScheme,
 };
 
-pub trait ConsensusSignatureScheme: Send + Sync {
+pub trait ConsensusSignatureScheme: Clone + Send + Sync + 'static {
     /// Identity bytes written into `Vote::vote_owner` (address, public key, etc.).
     fn identity(&self) -> &[u8];
 
     /// Sign a payload. Returns raw signature bytes (length scheme-specific).
-    fn sign(&self, payload: &[u8])
-        -> impl Future<Output = Result<Vec<u8>, ConsensusSchemeError>> + Send;
+    fn sign(&self, payload: &[u8]) -> Result<Vec<u8>, ConsensusSchemeError>;
 
     /// Static verification — no instance needed. The service calls this for
     /// every incoming vote.

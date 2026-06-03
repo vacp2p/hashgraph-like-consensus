@@ -4,10 +4,8 @@
 //! other durable backend. The provided [`InMemoryConsensusStorage`] keeps everything
 //! in RAM and is suitable for testing or single-node deployments.
 
-use async_stream::try_stream;
-use futures::Stream;
+use parking_lot::RwLock;
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::RwLock;
 
 use crate::{
     error::ConsensusError,
@@ -27,49 +25,43 @@ where
     Scope: ConsensusScope,
 {
     /// Persist a session (insert or overwrite by `proposal_id`).
-    fn save_session(
-        &self,
-        scope: &Scope,
-        session: ConsensusSession,
-    ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
+    fn save_session(&self, scope: &Scope, session: ConsensusSession) -> Result<(), ConsensusError>;
 
     /// Retrieve a session by proposal ID, or `None` if it doesn't exist.
     fn get_session(
         &self,
         scope: &Scope,
         proposal_id: u32,
-    ) -> impl Future<Output = Result<Option<ConsensusSession>, ConsensusError>> + Send;
+    ) -> Result<Option<ConsensusSession>, ConsensusError>;
 
     /// Remove and return a session, or `None` if not found.
     fn remove_session(
         &self,
         scope: &Scope,
         proposal_id: u32,
-    ) -> impl Future<Output = Result<Option<ConsensusSession>, ConsensusError>> + Send;
+    ) -> Result<Option<ConsensusSession>, ConsensusError>;
 
     /// List all sessions in a scope, or `None` if the scope doesn't exist.
     fn list_scope_sessions(
         &self,
         scope: &Scope,
-    ) -> impl Future<Output = Result<Option<Vec<ConsensusSession>>, ConsensusError>> + Send;
+    ) -> Result<Option<Vec<ConsensusSession>>, ConsensusError>;
 
-    /// Stream sessions in a scope one at a time (useful for large scopes).
-    fn stream_scope_sessions<'a>(
-        &'a self,
-        scope: &'a Scope,
-    ) -> impl Stream<Item = Result<ConsensusSession, ConsensusError>> + Send + 'a;
+    /// Iterate sessions in a scope one at a time (useful for large scopes).
+    fn stream_scope_sessions(
+        &self,
+        scope: &Scope,
+    ) -> impl Iterator<Item = Result<ConsensusSession, ConsensusError>>;
 
     /// Replace all sessions in a scope atomically.
     fn replace_scope_sessions(
         &self,
         scope: &Scope,
         sessions: Vec<ConsensusSession>,
-    ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
+    ) -> Result<(), ConsensusError>;
 
     /// List all known scopes, or `None` if no scopes exist.
-    fn list_scopes(
-        &self,
-    ) -> impl Future<Output = Result<Option<Vec<Scope>>, ConsensusError>> + Send;
+    fn list_scopes(&self) -> Result<Option<Vec<Scope>>, ConsensusError>;
 
     /// Apply a mutation to a single session in place.
     fn update_session<R, F>(
@@ -77,51 +69,32 @@ where
         scope: &Scope,
         proposal_id: u32,
         mutator: F,
-    ) -> impl Future<Output = Result<R, ConsensusError>> + Send
+    ) -> Result<R, ConsensusError>
     where
-        R: Send,
-        F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError> + Send;
+        F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError>;
 
     /// Apply a mutation to all sessions in a scope (e.g. trimming old entries).
-    fn update_scope_sessions<F>(
-        &self,
-        scope: &Scope,
-        mutator: F,
-    ) -> impl Future<Output = Result<(), ConsensusError>> + Send
+    fn update_scope_sessions<F>(&self, scope: &Scope, mutator: F) -> Result<(), ConsensusError>
     where
-        F: FnOnce(&mut Vec<ConsensusSession>) -> Result<(), ConsensusError> + Send;
+        F: FnOnce(&mut Vec<ConsensusSession>) -> Result<(), ConsensusError>;
 
     /// Get the scope-level configuration, or `None` if not yet initialized.
-    fn get_scope_config(
-        &self,
-        scope: &Scope,
-    ) -> impl Future<Output = Result<Option<ScopeConfig>, ConsensusError>> + Send;
+    fn get_scope_config(&self, scope: &Scope) -> Result<Option<ScopeConfig>, ConsensusError>;
 
     /// Set (insert or overwrite) the scope-level configuration.
-    fn set_scope_config(
-        &self,
-        scope: &Scope,
-        config: ScopeConfig,
-    ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
+    fn set_scope_config(&self, scope: &Scope, config: ScopeConfig) -> Result<(), ConsensusError>;
 
     /// Remove all data for a scope (sessions, config, everything).
     ///
     /// Called when a group is left or deleted. After this call, the scope
     /// behaves as if it was never initialized — creating new proposals on it
     /// starts fresh.
-    fn delete_scope(
-        &self,
-        scope: &Scope,
-    ) -> impl Future<Output = Result<(), ConsensusError>> + Send;
+    fn delete_scope(&self, scope: &Scope) -> Result<(), ConsensusError>;
 
     /// Apply a mutation to an existing scope configuration.
-    fn update_scope_config<F>(
-        &self,
-        scope: &Scope,
-        updater: F,
-    ) -> impl Future<Output = Result<(), ConsensusError>> + Send
+    fn update_scope_config<F>(&self, scope: &Scope, updater: F) -> Result<(), ConsensusError>
     where
-        F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError> + Send;
+        F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError>;
 
     // ── Query helpers (default implementations) ────────────────────────
     //
@@ -140,18 +113,15 @@ where
         &self,
         scope: &Scope,
         proposal_id: u32,
-    ) -> impl Future<Output = Result<bool, ConsensusError>> + Send {
-        async move {
-            use crate::session::ConsensusState;
-            let session = self
-                .get_session(scope, proposal_id)
-                .await?
-                .ok_or(ConsensusError::SessionNotFound)?;
-            match session.state {
-                ConsensusState::ConsensusReached(result) => Ok(result),
-                ConsensusState::Failed => Err(ConsensusError::ConsensusFailed),
-                ConsensusState::Active => Err(ConsensusError::ConsensusNotReached),
-            }
+    ) -> Result<bool, ConsensusError> {
+        use crate::session::ConsensusState;
+        let session = self
+            .get_session(scope, proposal_id)?
+            .ok_or(ConsensusError::SessionNotFound)?;
+        match session.state {
+            ConsensusState::ConsensusReached(result) => Ok(result),
+            ConsensusState::Failed => Err(ConsensusError::ConsensusFailed),
+            ConsensusState::Active => Err(ConsensusError::ConsensusNotReached),
         }
     }
 
@@ -159,18 +129,11 @@ where
     ///
     /// Returns [`SessionNotFound`](ConsensusError::SessionNotFound) if the
     /// proposal doesn't exist.
-    fn get_proposal(
-        &self,
-        scope: &Scope,
-        proposal_id: u32,
-    ) -> impl Future<Output = Result<Proposal, ConsensusError>> + Send {
-        async move {
-            let session = self
-                .get_session(scope, proposal_id)
-                .await?
-                .ok_or(ConsensusError::SessionNotFound)?;
-            Ok(session.proposal)
-        }
+    fn get_proposal(&self, scope: &Scope, proposal_id: u32) -> Result<Proposal, ConsensusError> {
+        let session = self
+            .get_session(scope, proposal_id)?
+            .ok_or(ConsensusError::SessionNotFound)?;
+        Ok(session.proposal)
     }
 
     /// Get the resolved configuration for a proposal.
@@ -181,52 +144,39 @@ where
         &self,
         scope: &Scope,
         proposal_id: u32,
-    ) -> impl Future<Output = Result<ConsensusConfig, ConsensusError>> + Send {
-        async move {
-            let session = self
-                .get_session(scope, proposal_id)
-                .await?
-                .ok_or(ConsensusError::SessionNotFound)?;
-            Ok(session.config)
-        }
+    ) -> Result<ConsensusConfig, ConsensusError> {
+        let session = self
+            .get_session(scope, proposal_id)?
+            .ok_or(ConsensusError::SessionNotFound)?;
+        Ok(session.config)
     }
 
     /// Get all proposals that are still accepting votes.
     ///
     /// Returns an empty `Vec` if no active proposals exist or the scope is unknown.
-    fn get_active_proposals(
-        &self,
-        scope: &Scope,
-    ) -> impl Future<Output = Result<Vec<Proposal>, ConsensusError>> + Send {
-        async move {
-            let sessions = self.list_scope_sessions(scope).await?.unwrap_or_default();
-            Ok(sessions
-                .into_iter()
-                .filter(|s| s.is_active())
-                .map(|s| s.proposal)
-                .collect())
-        }
+    fn get_active_proposals(&self, scope: &Scope) -> Result<Vec<Proposal>, ConsensusError> {
+        let sessions = self.list_scope_sessions(scope)?.unwrap_or_default();
+        Ok(sessions
+            .into_iter()
+            .filter(|s| s.is_active())
+            .map(|s| s.proposal)
+            .collect())
     }
 
     /// Get all proposals that reached consensus, with their results.
     ///
     /// Returns a map from `proposal_id` to result (`true` = YES, `false` = NO).
     /// Returns an empty map if no proposals reached consensus or the scope is unknown.
-    fn get_reached_proposals(
-        &self,
-        scope: &Scope,
-    ) -> impl Future<Output = Result<HashMap<u32, bool>, ConsensusError>> + Send {
-        async move {
-            let sessions = self.list_scope_sessions(scope).await?.unwrap_or_default();
-            Ok(sessions
-                .into_iter()
-                .filter_map(|s| {
-                    s.get_consensus_result()
-                        .ok()
-                        .map(|result| (s.proposal.proposal_id, result))
-                })
-                .collect())
-        }
+    fn get_reached_proposals(&self, scope: &Scope) -> Result<HashMap<u32, bool>, ConsensusError> {
+        let sessions = self.list_scope_sessions(scope)?.unwrap_or_default();
+        Ok(sessions
+            .into_iter()
+            .filter_map(|s| {
+                s.get_consensus_result()
+                    .ok()
+                    .map(|result| (s.proposal.proposal_id, result))
+            })
+            .collect())
     }
 }
 
@@ -272,72 +222,65 @@ impl<Scope> ConsensusStorage<Scope> for InMemoryConsensusStorage<Scope>
 where
     Scope: ConsensusScope + Clone,
 {
-    async fn save_session(
-        &self,
-        scope: &Scope,
-        session: ConsensusSession,
-    ) -> Result<(), ConsensusError> {
-        let mut sessions = self.sessions.write().await;
+    fn save_session(&self, scope: &Scope, session: ConsensusSession) -> Result<(), ConsensusError> {
+        let mut sessions = self.sessions.write();
         let entry = sessions.entry(scope.clone()).or_default();
         entry.insert(session.proposal.proposal_id, session);
         Ok(())
     }
 
-    async fn get_session(
+    fn get_session(
         &self,
         scope: &Scope,
         proposal_id: u32,
     ) -> Result<Option<ConsensusSession>, ConsensusError> {
-        let sessions = self.sessions.read().await;
+        let sessions = self.sessions.read();
         Ok(sessions
             .get(scope)
             .and_then(|scope| scope.get(&proposal_id))
             .cloned())
     }
 
-    async fn remove_session(
+    fn remove_session(
         &self,
         scope: &Scope,
         proposal_id: u32,
     ) -> Result<Option<ConsensusSession>, ConsensusError> {
-        let mut sessions = self.sessions.write().await;
+        let mut sessions = self.sessions.write();
         Ok(sessions
             .get_mut(scope)
             .and_then(|scope| scope.remove(&proposal_id)))
     }
 
-    async fn list_scope_sessions(
+    fn list_scope_sessions(
         &self,
         scope: &Scope,
     ) -> Result<Option<Vec<ConsensusSession>>, ConsensusError> {
-        let sessions = self.sessions.read().await;
+        let sessions = self.sessions.read();
         let result = sessions
             .get(scope)
             .map(|scope| scope.values().cloned().collect::<Vec<ConsensusSession>>());
         Ok(result)
     }
 
-    fn stream_scope_sessions<'a>(
-        &'a self,
-        scope: &'a Scope,
-    ) -> impl Stream<Item = Result<ConsensusSession, ConsensusError>> + Send + 'a {
-        try_stream! {
-            let guard = self.sessions.read().await;
-
-            if let Some(inner_map) = guard.get(scope) {
-                for session in inner_map.values() {
-                    yield session.clone();
-                }
-            }
-        }
+    fn stream_scope_sessions(
+        &self,
+        scope: &Scope,
+    ) -> impl Iterator<Item = Result<ConsensusSession, ConsensusError>> {
+        let guard = self.sessions.read();
+        let sessions = guard
+            .get(scope)
+            .map(|inner_map| inner_map.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        sessions.into_iter().map(Ok)
     }
 
-    async fn replace_scope_sessions(
+    fn replace_scope_sessions(
         &self,
         scope: &Scope,
         sessions_list: Vec<ConsensusSession>,
     ) -> Result<(), ConsensusError> {
-        let mut sessions = self.sessions.write().await;
+        let mut sessions = self.sessions.write();
         let new_map = sessions_list
             .into_iter()
             .map(|session| (session.proposal.proposal_id, session))
@@ -346,8 +289,8 @@ where
         Ok(())
     }
 
-    async fn list_scopes(&self) -> Result<Option<Vec<Scope>>, ConsensusError> {
-        let sessions = self.sessions.read().await;
+    fn list_scopes(&self) -> Result<Option<Vec<Scope>>, ConsensusError> {
+        let sessions = self.sessions.read();
         let result = sessions.keys().cloned().collect::<Vec<Scope>>();
         if result.is_empty() {
             return Ok(None);
@@ -355,17 +298,16 @@ where
         Ok(Some(result))
     }
 
-    async fn update_session<R, F>(
+    fn update_session<R, F>(
         &self,
         scope: &Scope,
         proposal_id: u32,
         mutator: F,
     ) -> Result<R, ConsensusError>
     where
-        R: Send,
-        F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError> + Send,
+        F: FnOnce(&mut ConsensusSession) -> Result<R, ConsensusError>,
     {
-        let mut sessions = self.sessions.write().await;
+        let mut sessions = self.sessions.write();
         let session = sessions
             .get_mut(scope)
             .and_then(|scope_sessions| scope_sessions.get_mut(&proposal_id))
@@ -375,15 +317,11 @@ where
         Ok(result)
     }
 
-    async fn update_scope_sessions<F>(
-        &self,
-        scope: &Scope,
-        mutator: F,
-    ) -> Result<(), ConsensusError>
+    fn update_scope_sessions<F>(&self, scope: &Scope, mutator: F) -> Result<(), ConsensusError>
     where
-        F: FnOnce(&mut Vec<ConsensusSession>) -> Result<(), ConsensusError> + Send,
+        F: FnOnce(&mut Vec<ConsensusSession>) -> Result<(), ConsensusError>,
     {
-        let mut sessions = self.sessions.write().await;
+        let mut sessions = self.sessions.write();
         let scope_sessions = sessions.entry(scope.clone()).or_default();
 
         let mut sessions_vec: Vec<ConsensusSession> = scope_sessions.values().cloned().collect();
@@ -403,37 +341,33 @@ where
         Ok(())
     }
 
-    async fn get_scope_config(&self, scope: &Scope) -> Result<Option<ScopeConfig>, ConsensusError> {
-        let configs = self.scope_configs.read().await;
+    fn get_scope_config(&self, scope: &Scope) -> Result<Option<ScopeConfig>, ConsensusError> {
+        let configs = self.scope_configs.read();
         Ok(configs.get(scope).cloned())
     }
 
-    async fn set_scope_config(
-        &self,
-        scope: &Scope,
-        config: ScopeConfig,
-    ) -> Result<(), ConsensusError> {
+    fn set_scope_config(&self, scope: &Scope, config: ScopeConfig) -> Result<(), ConsensusError> {
         config.validate()?;
-        let mut configs = self.scope_configs.write().await;
+        let mut configs = self.scope_configs.write();
         configs.insert(scope.clone(), config);
         Ok(())
     }
 
-    async fn delete_scope(&self, scope: &Scope) -> Result<(), ConsensusError> {
-        let mut sessions = self.sessions.write().await;
+    fn delete_scope(&self, scope: &Scope) -> Result<(), ConsensusError> {
+        let mut sessions = self.sessions.write();
         sessions.remove(scope);
         drop(sessions);
 
-        let mut configs = self.scope_configs.write().await;
+        let mut configs = self.scope_configs.write();
         configs.remove(scope);
         Ok(())
     }
 
-    async fn update_scope_config<F>(&self, scope: &Scope, updater: F) -> Result<(), ConsensusError>
+    fn update_scope_config<F>(&self, scope: &Scope, updater: F) -> Result<(), ConsensusError>
     where
-        F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError> + Send,
+        F: FnOnce(&mut ScopeConfig) -> Result<(), ConsensusError>,
     {
-        let mut configs = self.scope_configs.write().await;
+        let mut configs = self.scope_configs.write();
         let config = configs.entry(scope.clone()).or_default();
         updater(config)?;
         config.validate()?;

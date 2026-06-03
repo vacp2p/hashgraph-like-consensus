@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.5.0
+
+**Breaking** — the library is now fully synchronous. Every method drops `async`
+and returns its value directly; remove `.await` from all call sites. `tokio` is
+no longer a dependency.
+
+### Changed
+
+- All `ConsensusService`, `ConsensusStorage`, and `ConsensusEventBus` methods,
+  plus `ConsensusSignatureScheme::sign` and `utils::build_vote`, are now sync:
+  ```rust
+  // before
+  let vote = service.cast_vote(&scope, id, choice).await?;
+  // after
+  let vote = service.cast_vote(&scope, id, choice)?;
+  ```
+- `ConsensusStorage::stream_scope_sessions` returns `impl Iterator<Item = ...>`
+  instead of a `futures::Stream`.
+- `BroadcastEventBus` now fans out over `std::sync::mpsc`. `subscribe()` returns
+  a `std::sync::mpsc::Receiver`; consume it with `recv()` / `try_recv()` /
+  `recv_timeout()` (was `recv().await`). Slow subscribers miss events rather than
+  blocking the publisher.
+- `InMemoryConsensusStorage` uses `parking_lot::RwLock` internally.
+- The default `EthereumConsensusSigner` signs via alloy's `SignerSync`.
+
+### Added
+
+- Optional `ethereum` feature (enabled by default) gating the alloy-backed
+  `EthereumConsensusSigner` and the `DefaultConsensusService` alias. Build with
+  `default-features = false` to drop the alloy dependency and supply your own
+  `ConsensusSignatureScheme`.
+
+### Migration
+
+Remove `.await` from every consensus call, drop `#[tokio::main]`/`#[tokio::test]`
+(no async runtime needed), and switch event subscribers from `recv().await` to a
+blocking `recv()` / `recv_timeout()`.
+
 ## 0.4.0
 
 **Breaking** — `ConsensusService` now holds its peer's signer instead of

@@ -23,8 +23,8 @@ const EXPECTED_VOTERS_COUNT: u32 = 3;
 const VOTE_YES: bool = true;
 const VOTE_NO: bool = false;
 
-#[tokio::test]
-async fn test_received_hash_for_new_voter() {
+#[test]
+fn test_received_hash_for_new_voter() {
     let proposal_owner = wrap(PrivateKeySigner::random());
     let service = DefaultConsensusService::new(proposal_owner.clone());
     let scope = ScopeID::from(SCOPE);
@@ -43,18 +43,14 @@ async fn test_received_hash_for_new_voter() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal");
 
     let proposal = service
         .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES)
-        .await
         .expect("proposal_owner vote");
 
     let other_voter = wrap(PrivateKeySigner::random());
-    let vote = build_vote(&proposal, VOTE_YES, &other_voter)
-        .await
-        .expect("second vote");
+    let vote = build_vote(&proposal, VOTE_YES, &other_voter).expect("second vote");
 
     assert!(
         vote.parent_hash.is_empty(),
@@ -71,8 +67,8 @@ async fn test_received_hash_for_new_voter() {
         .expect("proposal with second voter should validate");
 }
 
-#[tokio::test]
-async fn test_parent_hash_for_same_voter() {
+#[test]
+fn test_parent_hash_for_same_voter() {
     let proposal_owner = wrap(PrivateKeySigner::random());
     let service = DefaultConsensusService::new(proposal_owner.clone());
     let scope = ScopeID::from(SCOPE);
@@ -91,18 +87,14 @@ async fn test_parent_hash_for_same_voter() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal");
 
     let proposal = service
         .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES)
-        .await
         .expect("proposal_owner vote");
 
     // Create a second vote from the same voter to exercise parent_hash logic.
-    let second_vote = build_vote(&proposal, VOTE_NO, &proposal_owner)
-        .await
-        .expect("second vote");
+    let second_vote = build_vote(&proposal, VOTE_NO, &proposal_owner).expect("second vote");
 
     assert!(
         second_vote.received_hash == proposal.votes[0].vote_hash,

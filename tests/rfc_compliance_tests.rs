@@ -1,8 +1,7 @@
-use alloy::signers::{Signer, local::PrivateKeySigner};
+use alloy::signers::{SignerSync, local::PrivateKeySigner};
 use hashgraph_like_consensus::signing::EthereumConsensusSigner;
 use prost::Message;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::time::sleep;
 
 use hashgraph_like_consensus::{
     error::ConsensusError,
@@ -14,7 +13,7 @@ use hashgraph_like_consensus::{
     utils::{build_vote, compute_vote_hash},
 };
 
-async fn cast_remote_vote(
+fn cast_remote_vote(
     service: &DefaultConsensusService,
     scope: &ScopeID,
     proposal_id: u32,
@@ -24,13 +23,13 @@ async fn cast_remote_vote(
     hashgraph_like_consensus::protos::consensus::v1::Vote,
     hashgraph_like_consensus::error::ConsensusError,
 > {
-    let proposal = service.storage().get_proposal(scope, proposal_id).await?;
-    let vote = build_vote(&proposal, choice, signer).await?;
-    service.process_incoming_vote(scope, vote.clone()).await?;
+    let proposal = service.storage().get_proposal(scope, proposal_id)?;
+    let vote = build_vote(&proposal, choice, signer)?;
+    service.process_incoming_vote(scope, vote.clone())?;
     Ok(vote)
 }
 
-async fn cast_remote_vote_and_get_proposal(
+fn cast_remote_vote_and_get_proposal(
     service: &DefaultConsensusService,
     scope: &ScopeID,
     proposal_id: u32,
@@ -40,8 +39,8 @@ async fn cast_remote_vote_and_get_proposal(
     hashgraph_like_consensus::protos::consensus::v1::Proposal,
     hashgraph_like_consensus::error::ConsensusError,
 > {
-    cast_remote_vote(service, scope, proposal_id, choice, signer).await?;
-    service.storage().get_proposal(scope, proposal_id).await
+    cast_remote_vote(service, scope, proposal_id, choice, signer)?;
+    service.storage().get_proposal(scope, proposal_id)
 }
 
 fn make_service() -> DefaultConsensusService {
@@ -75,8 +74,8 @@ fn owner_bytes(signer: &PrivateKeySigner) -> Vec<u8> {
 }
 
 /// Test that proposal initialization has round = 1
-#[tokio::test]
-async fn test_proposal_initialization_round_is_one() {
+#[test]
+fn test_proposal_initialization_round_is_one() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
@@ -95,15 +94,14 @@ async fn test_proposal_initialization_round_is_one() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     assert_eq!(proposal.round, 1, "Proposal should start with round = 1");
 }
 
 /// RFC Section 2.5.3: Test that round increments when votes are added (P2P mode)
-#[tokio::test]
-async fn test_round_increments_on_vote_p2p() {
+#[test]
+fn test_round_increments_on_vote_p2p() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
@@ -122,7 +120,6 @@ async fn test_round_increments_on_vote_p2p() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::p2p()),
         )
-        .await
         .expect("proposal should be created");
 
     assert_eq!(
@@ -137,7 +134,6 @@ async fn test_round_increments_on_vote_p2p() {
         VOTE_YES,
         &wrap(proposal_owner),
     )
-    .await
     .expect("vote should be added");
 
     assert_eq!(
@@ -153,7 +149,6 @@ async fn test_round_increments_on_vote_p2p() {
         VOTE_YES,
         &wrap(voter2),
     )
-    .await
     .expect("second vote should be added");
 
     assert_eq!(
@@ -163,8 +158,8 @@ async fn test_round_increments_on_vote_p2p() {
 }
 
 /// RFC Section 2.5.3: Test that gossipsub keeps rounds at 2 for all votes
-#[tokio::test]
-async fn test_gossipsub_rounds_stay_at_two() {
+#[test]
+fn test_gossipsub_rounds_stay_at_two() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
@@ -185,7 +180,6 @@ async fn test_gossipsub_rounds_stay_at_two() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     assert_eq!(
@@ -201,7 +195,6 @@ async fn test_gossipsub_rounds_stay_at_two() {
         VOTE_YES,
         &wrap(proposal_owner),
     )
-    .await
     .expect("vote should be added");
 
     assert_eq!(
@@ -219,7 +212,6 @@ async fn test_gossipsub_rounds_stay_at_two() {
         VOTE_YES,
         &wrap(voter2),
     )
-    .await
     .expect("second vote should be added");
 
     assert_eq!(
@@ -237,7 +229,6 @@ async fn test_gossipsub_rounds_stay_at_two() {
         VOTE_YES,
         &wrap(voter3),
     )
-    .await
     .expect("third vote should be added");
 
     assert_eq!(
@@ -252,8 +243,8 @@ async fn test_gossipsub_rounds_stay_at_two() {
 }
 
 /// Test that gossipsub allows multiple votes in round 2 (not limited to 2 votes)
-#[tokio::test]
-async fn test_gossipsub_allows_multiple_votes_in_round_two() {
+#[test]
+fn test_gossipsub_allows_multiple_votes_in_round_two() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
@@ -276,7 +267,6 @@ async fn test_gossipsub_allows_multiple_votes_in_round_two() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     // First vote moves to round 2
@@ -287,7 +277,6 @@ async fn test_gossipsub_allows_multiple_votes_in_round_two() {
         VOTE_YES,
         &wrap(proposal_owner),
     )
-    .await
     .expect("vote should be added");
     assert_eq!(last_proposal.round, 2);
     assert_eq!(last_proposal.votes.len(), 1);
@@ -303,7 +292,6 @@ async fn test_gossipsub_allows_multiple_votes_in_round_two() {
             VOTE_YES,
             &wrap(voter),
         )
-        .await
         .unwrap_or_else(|_| panic!("vote {} should be added", i + 2));
         assert_eq!(
             last_proposal.round, 2,
@@ -323,8 +311,8 @@ async fn test_gossipsub_allows_multiple_votes_in_round_two() {
 }
 
 /// Test that P2P mode uses ceil(2n/3) for max rounds when max_rounds = 0
-#[tokio::test]
-async fn test_p2p_dynamic_max_rounds() {
+#[test]
+fn test_p2p_dynamic_max_rounds() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
@@ -344,7 +332,6 @@ async fn test_p2p_dynamic_max_rounds() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::p2p()),
         )
-        .await
         .expect("proposal should be created");
 
     // Add 6 votes - should all succeed
@@ -362,7 +349,6 @@ async fn test_p2p_dynamic_max_rounds() {
             VOTE_YES,
             &wrap(voter.clone()),
         )
-        .await
         .unwrap_or_else(|_| panic!("vote {} should be added", i + 1));
         assert_eq!(
             last_proposal.round,
@@ -385,8 +371,7 @@ async fn test_p2p_dynamic_max_rounds() {
     // Verify consensus was reached (this is expected behavior)
     let result = service
         .storage()
-        .get_consensus_result(&scope, last_proposal.proposal_id)
-        .await;
+        .get_consensus_result(&scope, last_proposal.proposal_id);
     assert!(
         result.is_ok(),
         "Consensus should be reached with 6 YES votes"
@@ -401,8 +386,8 @@ async fn test_p2p_dynamic_max_rounds() {
 }
 
 /// Test P2P ceil(2n/3) calculation for various values of n
-#[tokio::test]
-async fn test_p2p_ceil_calculation_edge_cases() {
+#[test]
+fn test_p2p_ceil_calculation_edge_cases() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE);
 
@@ -436,7 +421,6 @@ async fn test_p2p_ceil_calculation_edge_cases() {
                 .expect("valid proposal request"),
                 Some(ConsensusConfig::p2p()),
             )
-            .await
             .expect("proposal should be created");
 
         // Add votes up to the limit
@@ -454,7 +438,6 @@ async fn test_p2p_ceil_calculation_edge_cases() {
                 VOTE_YES,
                 &wrap(voter.clone()),
             )
-            .await
             .unwrap_or_else(|_| panic!("vote {} for n={} should succeed", i + 1, n));
         }
 
@@ -469,8 +452,8 @@ async fn test_p2p_ceil_calculation_edge_cases() {
 }
 
 /// Test that gossipsub correctly processes batch votes via process_incoming_proposal
-#[tokio::test]
-async fn test_gossipsub_batch_vote_processing() {
+#[test]
+fn test_gossipsub_batch_vote_processing() {
     let service = make_service();
     let scope = ScopeID::from("batch_gossipsub");
     let proposal_owner = PrivateKeySigner::random();
@@ -490,30 +473,22 @@ async fn test_gossipsub_batch_vote_processing() {
 
     // Add votes to the proposal (simulating votes received from network)
     let voter1 = PrivateKeySigner::random();
-    let vote1 = build_vote(&proposal, VOTE_YES, &wrap(voter1))
-        .await
-        .expect("vote should be created");
+    let vote1 = build_vote(&proposal, VOTE_YES, &wrap(voter1)).expect("vote should be created");
     proposal.votes.push(vote1);
     proposal.round = 2; // Gossipsub: round 2 after first vote
 
     let voter2 = PrivateKeySigner::random();
-    let vote2 = build_vote(&proposal, VOTE_YES, &wrap(voter2))
-        .await
-        .expect("vote should be created");
+    let vote2 = build_vote(&proposal, VOTE_YES, &wrap(voter2)).expect("vote should be created");
     proposal.votes.push(vote2);
     // Round stays at 2 for gossipsub
 
     let voter3 = PrivateKeySigner::random();
-    let vote3 = build_vote(&proposal, VOTE_YES, &wrap(voter3))
-        .await
-        .expect("vote should be created");
+    let vote3 = build_vote(&proposal, VOTE_YES, &wrap(voter3)).expect("vote should be created");
     proposal.votes.push(vote3);
 
     // Process the proposal with multiple votes (batch processing)
     // This should work in gossipsub mode - all votes are in round 2
-    let result = service
-        .process_incoming_proposal(&scope, proposal.clone())
-        .await;
+    let result = service.process_incoming_proposal(&scope, proposal.clone());
     assert!(
         result.is_ok(),
         "Gossipsub: Should accept batch votes in round 2"
@@ -528,7 +503,6 @@ async fn test_gossipsub_batch_vote_processing() {
         VOTE_YES,
         &wrap(voter4),
     )
-    .await
     .expect("additional vote should succeed");
     assert_eq!(
         final_proposal.round, 2,
@@ -542,8 +516,8 @@ async fn test_gossipsub_batch_vote_processing() {
 }
 
 /// Test that P2P correctly processes batch votes via process_incoming_proposal
-#[tokio::test]
-async fn test_p2p_batch_vote_processing() {
+#[test]
+fn test_p2p_batch_vote_processing() {
     let service = make_service();
     let scope = ScopeID::from("batch_p2p");
     let proposal_owner = PrivateKeySigner::random();
@@ -568,17 +542,14 @@ async fn test_p2p_batch_vote_processing() {
     }
 
     for (i, voter) in voters.iter().enumerate() {
-        let vote = build_vote(&proposal, VOTE_YES, &wrap(voter.clone()))
-            .await
-            .expect("vote should be created");
+        let vote =
+            build_vote(&proposal, VOTE_YES, &wrap(voter.clone())).expect("vote should be created");
         proposal.votes.push(vote);
         proposal.round = (i + 2) as u32; // P2P: round increments per vote
     }
 
     // Process the proposal with 6 votes (at the limit)
-    let result = service
-        .process_incoming_proposal(&scope, proposal.clone())
-        .await;
+    let result = service.process_incoming_proposal(&scope, proposal.clone());
     assert!(
         result.is_ok(),
         "P2P: Should accept batch votes up to ceil(2n/3)"
@@ -587,8 +558,7 @@ async fn test_p2p_batch_vote_processing() {
     // Verify by checking consensus result (6 YES votes out of 9 reaches consensus)
     let consensus_result = service
         .storage()
-        .get_consensus_result(&scope, proposal.proposal_id)
-        .await;
+        .get_consensus_result(&scope, proposal.proposal_id);
     assert!(
         consensus_result.is_ok(),
         "P2P: Consensus should be reached with 6 YES votes"
@@ -607,16 +577,14 @@ async fn test_p2p_batch_vote_processing() {
         proposal.proposal_id,
         VOTE_YES,
         &wrap(voter7),
-    )
-    .await;
+    );
 
     // The vote might succeed (returns vote) but won't be added because session reached consensus
     // Or it might fail with SessionNotActive
     // Either way, verify the vote count doesn't increase and consensus result stays the same
     let final_consensus = service
         .storage()
-        .get_consensus_result(&scope, proposal.proposal_id)
-        .await;
+        .get_consensus_result(&scope, proposal.proposal_id);
     assert!(
         final_consensus.is_ok(),
         "P2P: Consensus result should remain YES"
@@ -631,8 +599,8 @@ async fn test_p2p_batch_vote_processing() {
 }
 
 /// Test that consensus can be reached in both modes
-#[tokio::test]
-async fn test_consensus_reachable_in_both_modes() {
+#[test]
+fn test_consensus_reachable_in_both_modes() {
     let service = make_service();
 
     // Test gossipsub mode
@@ -652,7 +620,6 @@ async fn test_consensus_reachable_in_both_modes() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     // Add 4 YES votes (all in round 2 for gossipsub)
@@ -669,14 +636,12 @@ async fn test_consensus_reachable_in_both_modes() {
             VOTE_YES,
             &wrap(voter),
         )
-        .await
         .expect("vote should succeed");
     }
 
     let result1 = service
         .storage()
-        .get_consensus_result(&scope1, proposal1.proposal_id)
-        .await;
+        .get_consensus_result(&scope1, proposal1.proposal_id);
     assert!(result1.is_ok(), "Gossipsub: Consensus should be reached");
     assert!(result1.unwrap(), "Gossipsub: Consensus should be reached");
 
@@ -697,7 +662,6 @@ async fn test_consensus_reachable_in_both_modes() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::p2p()),
         )
-        .await
         .expect("proposal should be created");
 
     // Add 4 YES votes (rounds increment in P2P)
@@ -714,21 +678,19 @@ async fn test_consensus_reachable_in_both_modes() {
             VOTE_YES,
             &wrap(voter),
         )
-        .await
         .expect("vote should succeed");
     }
 
     let result2 = service
         .storage()
-        .get_consensus_result(&scope2, proposal2.proposal_id)
-        .await;
+        .get_consensus_result(&scope2, proposal2.proposal_id);
     assert!(result2.is_ok(), "P2P: Consensus should be reached");
     assert!(result2.unwrap(), "P2P: Consensus should be reached");
 }
 
 /// RFC Section 4: Test that n ≤ 2 requires unanimous YES votes
-#[tokio::test]
-async fn test_n_le_2_requires_unanimous_yes() {
+#[test]
+fn test_n_le_2_requires_unanimous_yes() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
@@ -747,7 +709,6 @@ async fn test_n_le_2_requires_unanimous_yes() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     let proposal = cast_remote_vote_and_get_proposal(
@@ -757,14 +718,12 @@ async fn test_n_le_2_requires_unanimous_yes() {
         VOTE_YES,
         &wrap(proposal_owner),
     )
-    .await
     .expect("vote should be added");
 
     // Should reach consensus immediately with unanimous YES
     let result = service
         .storage()
-        .get_consensus_result(&scope, proposal.proposal_id)
-        .await;
+        .get_consensus_result(&scope, proposal.proposal_id);
     assert!(result.is_ok(), "RFC Section 4: n=1 requires unanimous YES");
     assert!(result.unwrap(), "RFC Section 4: n=1 requires unanimous YES");
 
@@ -785,7 +744,6 @@ async fn test_n_le_2_requires_unanimous_yes() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     let proposal2 = cast_remote_vote_and_get_proposal(
@@ -795,7 +753,6 @@ async fn test_n_le_2_requires_unanimous_yes() {
         VOTE_YES,
         &wrap(proposal_owner2),
     )
-    .await
     .expect("first vote");
 
     let voter2 = PrivateKeySigner::random();
@@ -806,14 +763,12 @@ async fn test_n_le_2_requires_unanimous_yes() {
         VOTE_YES,
         &wrap(voter2),
     )
-    .await
     .expect("second vote");
 
-    sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
+    std::thread::sleep(Duration::from_millis(EXPIRATION_WAIT_TIME));
     let result = service
         .storage()
-        .get_consensus_result(&scope2, proposal2.proposal_id)
-        .await;
+        .get_consensus_result(&scope2, proposal2.proposal_id);
     assert!(result.is_ok(), "RFC Section 4: n=2 requires unanimous YES");
     assert!(result.unwrap(), "RFC Section 4: n=2 requires unanimous YES");
 
@@ -834,7 +789,6 @@ async fn test_n_le_2_requires_unanimous_yes() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     let proposal3 = cast_remote_vote_and_get_proposal(
@@ -844,7 +798,6 @@ async fn test_n_le_2_requires_unanimous_yes() {
         VOTE_YES,
         &wrap(proposal_owner3),
     )
-    .await
     .expect("first vote");
 
     let voter3 = PrivateKeySigner::random();
@@ -855,14 +808,12 @@ async fn test_n_le_2_requires_unanimous_yes() {
         VOTE_NO,
         &wrap(voter3),
     )
-    .await
     .expect("second vote");
 
-    sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
+    std::thread::sleep(Duration::from_millis(EXPIRATION_WAIT_TIME));
     let result = service
         .storage()
-        .get_consensus_result(&scope3, proposal3.proposal_id)
-        .await;
+        .get_consensus_result(&scope3, proposal3.proposal_id);
     assert!(
         result.is_ok(),
         "RFC Section 4: n=2 with non-unanimous should be NO"
@@ -874,8 +825,8 @@ async fn test_n_le_2_requires_unanimous_yes() {
 }
 
 /// RFC Section 4: Test that n > 2 requires more than n/2 YES votes among 2n/3 distinct peers
-#[tokio::test]
-async fn test_n_gt_2_consensus_requirements() {
+#[test]
+fn test_n_gt_2_consensus_requirements() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
@@ -894,7 +845,6 @@ async fn test_n_gt_2_consensus_requirements() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     let proposal = cast_remote_vote_and_get_proposal(
@@ -904,14 +854,12 @@ async fn test_n_gt_2_consensus_requirements() {
         VOTE_YES,
         &wrap(proposal_owner),
     )
-    .await
     .expect("first vote");
 
     // Only 1 YES vote, not enough (need 2)
     let result = service
         .storage()
-        .get_consensus_result(&scope, proposal.proposal_id)
-        .await;
+        .get_consensus_result(&scope, proposal.proposal_id);
     assert!(
         result.is_err(),
         "Should not reach consensus with only 1 vote"
@@ -929,14 +877,12 @@ async fn test_n_gt_2_consensus_requirements() {
         VOTE_YES,
         &wrap(voter2),
     )
-    .await
     .expect("second vote");
 
-    sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
+    std::thread::sleep(Duration::from_millis(EXPIRATION_WAIT_TIME));
     let result = service
         .storage()
-        .get_consensus_result(&scope, proposal.proposal_id)
-        .await;
+        .get_consensus_result(&scope, proposal.proposal_id);
     assert!(
         result.is_ok(),
         "RFC Section 4: Should reach YES consensus with 2 YES votes out of 3"
@@ -948,8 +894,8 @@ async fn test_n_gt_2_consensus_requirements() {
 }
 
 /// RFC Section 2.5.4: Test that expired proposals are rejected
-#[tokio::test]
-async fn test_expired_proposal_rejected() {
+#[test]
+fn test_expired_proposal_rejected() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
@@ -968,10 +914,9 @@ async fn test_expired_proposal_rejected() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
-    sleep(Duration::from_secs(EXPIRATION_WAIT_TIME_2_SECOND)).await;
+    std::thread::sleep(Duration::from_secs(EXPIRATION_WAIT_TIME_2_SECOND));
     let voter = PrivateKeySigner::random();
     let err = cast_remote_vote(
         &service,
@@ -980,7 +925,6 @@ async fn test_expired_proposal_rejected() {
         VOTE_YES,
         &wrap(voter),
     )
-    .await
     .expect_err("Should reject vote on expired proposal");
 
     // process_incoming_vote rejects via validate_vote (VoteExpired) when the
@@ -997,8 +941,8 @@ async fn test_expired_proposal_rejected() {
 }
 
 /// RFC Section 3.4: Test timestamp replay attack protection
-#[tokio::test]
-async fn test_timestamp_replay_attack_protection() {
+#[test]
+fn test_timestamp_replay_attack_protection() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
@@ -1017,7 +961,6 @@ async fn test_timestamp_replay_attack_protection() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     let proposal = cast_remote_vote_and_get_proposal(
@@ -1027,7 +970,6 @@ async fn test_timestamp_replay_attack_protection() {
         VOTE_YES,
         &wrap(proposal_owner),
     )
-    .await
     .expect("first vote");
 
     // Create a vote with old timestamp (more than 1 hour ago)
@@ -1038,9 +980,7 @@ async fn test_timestamp_replay_attack_protection() {
         .saturating_sub(EXPIRATION * 2); // More than expiration time
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter.clone()))
-        .await
-        .expect("create vote");
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter.clone())).expect("create vote");
 
     // Manually set old timestamp
     vote.timestamp = old_timestamp;
@@ -1048,15 +988,13 @@ async fn test_timestamp_replay_attack_protection() {
     vote.signature.clear();
     let vote_bytes = vote.encode_to_vec();
     vote.signature = voter
-        .sign_message(&vote_bytes)
-        .await
+        .sign_message_sync(&vote_bytes)
         .expect("sign vote")
         .as_bytes()
         .to_vec();
 
     let err = service
         .process_incoming_vote(&scope, vote)
-        .await
         .expect_err("Should reject vote with old timestamp");
 
     assert!(
@@ -1066,8 +1004,8 @@ async fn test_timestamp_replay_attack_protection() {
 }
 
 /// RFC Section 4: Test equality of votes handling
-#[tokio::test]
-async fn test_equality_of_votes_handling() {
+#[test]
+fn test_equality_of_votes_handling() {
     let service = make_service();
     let scope = ScopeID::from(SCOPE);
     let proposal_owner = PrivateKeySigner::random();
@@ -1089,7 +1027,6 @@ async fn test_equality_of_votes_handling() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     let proposal = cast_remote_vote_and_get_proposal(
@@ -1099,7 +1036,6 @@ async fn test_equality_of_votes_handling() {
         VOTE_YES,
         &wrap(proposal_owner),
     )
-    .await
     .expect("first vote");
 
     let voter2 = PrivateKeySigner::random();
@@ -1110,7 +1046,6 @@ async fn test_equality_of_votes_handling() {
         VOTE_YES,
         &wrap(voter2),
     )
-    .await
     .expect("second vote");
 
     let voter3 = PrivateKeySigner::random();
@@ -1121,7 +1056,6 @@ async fn test_equality_of_votes_handling() {
         VOTE_NO,
         &wrap(voter3),
     )
-    .await
     .expect("third vote");
 
     let voter4 = PrivateKeySigner::random();
@@ -1132,16 +1066,14 @@ async fn test_equality_of_votes_handling() {
         VOTE_NO,
         &wrap(voter4),
     )
-    .await
     .expect("fourth vote");
 
-    sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
+    std::thread::sleep(Duration::from_millis(EXPIRATION_WAIT_TIME));
     // We have 4 votes: 2 YES, 2 NO (equality)
     // With liveness_criteria_yes = true, should resolve to YES
     let result = service
         .storage()
-        .get_consensus_result(&scope, proposal.proposal_id)
-        .await;
+        .get_consensus_result(&scope, proposal.proposal_id);
     assert!(
         result.is_ok(),
         "RFC Section 4: Equality with liveness_criteria_yes=true should be YES"
@@ -1169,7 +1101,6 @@ async fn test_equality_of_votes_handling() {
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
         )
-        .await
         .expect("proposal should be created");
 
     let proposal2 = cast_remote_vote_and_get_proposal(
@@ -1179,7 +1110,6 @@ async fn test_equality_of_votes_handling() {
         VOTE_YES,
         &wrap(proposal_owner2),
     )
-    .await
     .expect("first vote");
 
     let voter2_2 = PrivateKeySigner::random();
@@ -1190,7 +1120,6 @@ async fn test_equality_of_votes_handling() {
         VOTE_YES,
         &wrap(voter2_2),
     )
-    .await
     .expect("second vote");
 
     let voter3_2 = PrivateKeySigner::random();
@@ -1201,7 +1130,6 @@ async fn test_equality_of_votes_handling() {
         VOTE_NO,
         &wrap(voter3_2),
     )
-    .await
     .expect("third vote");
 
     let voter4_2 = PrivateKeySigner::random();
@@ -1212,15 +1140,13 @@ async fn test_equality_of_votes_handling() {
         VOTE_NO,
         &wrap(voter4_2),
     )
-    .await
     .expect("fourth vote");
 
-    sleep(Duration::from_millis(EXPIRATION_WAIT_TIME)).await;
+    std::thread::sleep(Duration::from_millis(EXPIRATION_WAIT_TIME));
     // Equality with liveness_criteria_yes = false should resolve to NO
     let result = service
         .storage()
-        .get_consensus_result(&scope2, proposal2.proposal_id)
-        .await;
+        .get_consensus_result(&scope2, proposal2.proposal_id);
     assert!(
         result.is_ok(),
         "RFC Section 4: Equality with liveness_criteria_yes=false should be NO"

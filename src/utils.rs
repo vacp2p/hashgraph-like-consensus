@@ -54,7 +54,7 @@ pub fn compute_vote_hash(vote: &Vote) -> Vec<u8> {
 /// This builds a vote that links to previous votes in the hashgraph structure.
 /// The vote is signed with the provided signer and includes all the necessary
 /// fields for validation (parent_hash, received_hash, vote_hash, signature).
-pub async fn build_vote<Signer: ConsensusSignatureScheme>(
+pub fn build_vote<Signer: ConsensusSignatureScheme>(
     proposal: &Proposal,
     user_vote: bool,
     signer: &Signer,
@@ -95,7 +95,7 @@ pub async fn build_vote<Signer: ConsensusSignatureScheme>(
 
     vote.vote_hash = compute_vote_hash(&vote);
     let vote_bytes = vote.encode_to_vec();
-    let signature = signer.sign(&vote_bytes).await?;
+    let signature = signer.sign(&vote_bytes)?;
     vote.signature = signature;
     Ok(vote)
 }
