@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.0
+
+**Breaking** — the caller supplies the current time. Every time-sensitive
+method takes a trailing `now: u64` (seconds since Unix epoch) and the library
+performs no system-clock reads, so the application controls the time source —
+system time in production, a controllable clock in tests.
+
+### Changed
+
+- `ConsensusService::create_proposal`, `create_proposal_with_config`,
+  `cast_vote`, `cast_vote_and_get_proposal`, `process_incoming_proposal`,
+  `process_incoming_vote`, and `handle_consensus_timeout` take `now: u64`:
+  ```rust
+  // before
+  let vote = service.cast_vote(&scope, id, choice)?;
+  // after
+  let vote = service.cast_vote(&scope, id, choice, now)?;
+  ```
+- `CreateProposalRequest::into_proposal`, `ConsensusSession::from_proposal`,
+  `utils::build_vote`, and `utils::validate_proposal` take `now: u64` as well.
+- Proposal creation/expiration stamps, vote timestamps, expiration validation,
+  session `created_at`, and `ConsensusEvent` timestamps all derive from the
+  caller-supplied `now`.
+
+### Removed
+
+- `ConsensusError::FailedToGetCurrentTime` — no fallible clock read exists.
+
 ## 0.5.0
 
 **Breaking** — the library is now fully synchronous. Every method drops `async`

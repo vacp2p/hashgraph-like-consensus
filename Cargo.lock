@@ -1456,7 +1456,7 @@ dependencies = [
 
 [[package]]
 name = "hashgraph-like-consensus"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "alloy",
  "alloy-signer",
