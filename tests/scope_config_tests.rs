@@ -1,18 +1,12 @@
 mod common;
-use common::now_ts;
+use common::{make_service, now_ts};
 
 use std::time::Duration;
 
-use alloy::signers::local::PrivateKeySigner;
 use hashgraph_like_consensus::{
-    error::ConsensusError, scope::ScopeID, scope_config::NetworkType,
-    service::DefaultConsensusService, session::ConsensusConfig, signing::EthereumConsensusSigner,
+    error::ConsensusError, scope::ScopeID, scope_config::NetworkType, session::ConsensusConfig,
     storage::ConsensusStorage, types::CreateProposalRequest,
 };
-
-fn make_service() -> DefaultConsensusService {
-    DefaultConsensusService::new(EthereumConsensusSigner::new(PrivateKeySigner::random()))
-}
 
 const SCOPE_NAME: &str = "test_scope";
 const PROPOSAL_PAYLOAD: Vec<u8> = vec![];

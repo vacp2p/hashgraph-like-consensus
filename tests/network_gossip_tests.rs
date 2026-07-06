@@ -1,48 +1,19 @@
 mod common;
-use common::now_ts;
+use common::{cast_remote_vote, make_service, now_ts, owner_bytes, wrap};
 
 use alloy::signers::local::PrivateKeySigner;
 use std::thread;
 use std::time::Duration;
 
 use hashgraph_like_consensus::{
-    error::ConsensusError, scope::ScopeID, service::DefaultConsensusService,
-    session::ConsensusConfig, signing::EthereumConsensusSigner, storage::ConsensusStorage,
-    types::CreateProposalRequest, utils::build_vote,
+    error::ConsensusError, scope::ScopeID, session::ConsensusConfig, storage::ConsensusStorage,
+    types::CreateProposalRequest,
 };
-
-fn cast_remote_vote(
-    service: &DefaultConsensusService,
-    scope: &ScopeID,
-    proposal_id: u32,
-    choice: bool,
-    signer: &EthereumConsensusSigner,
-) -> Result<
-    hashgraph_like_consensus::protos::consensus::v1::Vote,
-    hashgraph_like_consensus::error::ConsensusError,
-> {
-    let proposal = service.storage().get_proposal(scope, proposal_id)?;
-    let vote = build_vote(&proposal, choice, signer, now_ts())?;
-    service.process_incoming_vote(scope, vote.clone(), now_ts())?;
-    Ok(vote)
-}
-
-fn make_service() -> DefaultConsensusService {
-    DefaultConsensusService::new(EthereumConsensusSigner::new(PrivateKeySigner::random()))
-}
-
-fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
-    EthereumConsensusSigner::new(signer)
-}
 
 const SCOPE: &str = "network_gossip_scope";
 const PROPOSAL_NAME: &str = "Network Gossip Proposal";
 const PROPOSAL_PAYLOAD: Vec<u8> = vec![];
 const EXPIRATION: u64 = 120;
-
-fn owner_bytes(signer: &PrivateKeySigner) -> Vec<u8> {
-    signer.address().as_slice().to_vec()
-}
 
 /// Peer A creates a proposal, gossips it to peer B, both vote YES,
 /// gossip votes back/forth, and both peers converge to Ok(true) consensus result.

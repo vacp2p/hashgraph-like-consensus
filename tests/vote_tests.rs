@@ -1,5 +1,5 @@
 mod common;
-use common::now_ts;
+use common::{now_ts, wrap};
 
 use alloy::signers::local::PrivateKeySigner;
 
@@ -11,10 +11,6 @@ use hashgraph_like_consensus::{
     types::CreateProposalRequest,
     utils::{build_vote, validate_proposal},
 };
-
-fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
-    EthereumConsensusSigner::new(signer)
-}
 
 const SCOPE: &str = "vote_scope";
 const PROPOSAL_NAME: &str = "Vote Test Proposal";

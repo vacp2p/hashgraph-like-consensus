@@ -1,5 +1,5 @@
 mod common;
-use common::now_ts;
+use common::{cast_remote_vote_and_get_proposal, make_service, now_ts, owner_bytes, wrap};
 
 use alloy::signers::{SignerSync, local::PrivateKeySigner};
 use hashgraph_like_consensus::signing::EthereumConsensusSigner;
@@ -9,50 +9,10 @@ use prost::Message;
 use hashgraph_like_consensus::{
     error::ConsensusError,
     scope::ScopeID,
-    service::DefaultConsensusService,
     session::ConsensusConfig,
-    storage::ConsensusStorage,
     types::CreateProposalRequest,
     utils::{build_vote, compute_vote_hash, validate_proposal},
 };
-
-fn cast_remote_vote(
-    service: &DefaultConsensusService,
-    scope: &ScopeID,
-    proposal_id: u32,
-    choice: bool,
-    signer: &EthereumConsensusSigner,
-) -> Result<
-    hashgraph_like_consensus::protos::consensus::v1::Vote,
-    hashgraph_like_consensus::error::ConsensusError,
-> {
-    let proposal = service.storage().get_proposal(scope, proposal_id)?;
-    let vote = build_vote(&proposal, choice, signer, now_ts())?;
-    service.process_incoming_vote(scope, vote.clone(), now_ts())?;
-    Ok(vote)
-}
-
-fn cast_remote_vote_and_get_proposal(
-    service: &DefaultConsensusService,
-    scope: &ScopeID,
-    proposal_id: u32,
-    choice: bool,
-    signer: &EthereumConsensusSigner,
-) -> Result<
-    hashgraph_like_consensus::protos::consensus::v1::Proposal,
-    hashgraph_like_consensus::error::ConsensusError,
-> {
-    cast_remote_vote(service, scope, proposal_id, choice, signer)?;
-    service.storage().get_proposal(scope, proposal_id)
-}
-
-fn make_service() -> DefaultConsensusService {
-    DefaultConsensusService::new(EthereumConsensusSigner::new(PrivateKeySigner::random()))
-}
-
-fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
-    EthereumConsensusSigner::new(signer)
-}
 
 const SCOPE: &str = "validation_scope";
 const PROPOSAL_NAME: &str = "Proposal";
@@ -65,10 +25,6 @@ const EXPECTED_VOTERS_COUNT_2: u32 = 2;
 
 const VOTE_YES: bool = true;
 const VOTE_NO: bool = false;
-
-fn owner_bytes(signer: &PrivateKeySigner) -> Vec<u8> {
-    signer.address().as_slice().to_vec()
-}
 
 fn resign_vote(
     vote: &mut hashgraph_like_consensus::protos::consensus::v1::Vote,

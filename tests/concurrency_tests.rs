@@ -1,5 +1,5 @@
 mod common;
-use common::now_ts;
+use common::{now_ts, wrap};
 
 use alloy::signers::local::PrivateKeySigner;
 use std::{
@@ -18,10 +18,6 @@ use hashgraph_like_consensus::{
     storage::{ConsensusStorage, InMemoryConsensusStorage},
     types::CreateProposalRequest,
 };
-
-fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
-    EthereumConsensusSigner::new(signer)
-}
 
 fn peer_service(
     storage: &InMemoryConsensusStorage<ScopeID>,
