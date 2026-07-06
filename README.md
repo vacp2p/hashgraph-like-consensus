@@ -48,11 +48,16 @@ use hashgraph_like_consensus::{
     types::CreateProposalRequest,
 };
 use alloy::signers::local::PrivateKeySigner;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
     let service = DefaultConsensusService::new(signer.clone());
     let scope = ScopeID::from("example-scope");
+
+    // The caller supplies the current time (seconds since Unix epoch) to every
+    // time-sensitive call, so the application controls the time source.
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
     // Create a proposal
     let proposal = service.create_proposal(
@@ -65,10 +70,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             60,                          // expiration (seconds from now)
             true,                        // liveness: silent peers count as YES at timeout
         )?,
+        now,
     )?;
 
     // Cast a vote — the service uses its held signer.
-    let vote = service.cast_vote(&scope, proposal.proposal_id, true)?;
+    let vote = service.cast_vote(&scope, proposal.proposal_id, true, now)?;
     println!("Recorded vote {}", vote.vote_id);
 
     Ok(())
@@ -184,8 +190,9 @@ orchestration. Your application is responsible for:
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Network propagation**              | The library performs no I/O. When you create a proposal or cast a vote, you must gossip it to peers yourself. When a message arrives from the network, call `process_incoming_proposal` or `process_incoming_vote`.                                |
 | **Timeout scheduling**               | The library does not spawn timers. You must schedule a timer for each proposal (using `consensus_timeout()` from the config) and call `handle_consensus_timeout` when it fires. Without this, proposals with offline voters stay `Active` forever. |
+| **Time source**                      | Every time-sensitive method takes `now` (seconds since Unix epoch) as a parameter. The application decides where time comes from — system time in production, a controllable clock in tests.                                                       |
 | **`expected_voters_count` accuracy** | This value drives all threshold math (`ceil(2n/3)` quorum, silent peer counting). If it doesn't match the actual group size, consensus results will be wrong.                                                                                      |
-| **Signer management**                | You construct each `ConsensusService` with the peer's `ConsensusSignatureScheme` value (e.g. `EthereumConsensusSigner::new(private_key)`). `cast_vote` uses that held signer. Each identity may vote at most once per proposal.                     |
+| **Signer management**                | You construct each `ConsensusService` with the peer's `ConsensusSignatureScheme` value (e.g. `EthereumConsensusSigner::new(private_key)`). `cast_vote` uses that held signer. Each identity may vote at most once per proposal.                    |
 | **Proposal ID tracking**             | The library generates a `proposal_id` on creation. You must store it and pass it to every subsequent call (`cast_vote`, `handle_consensus_timeout`, etc.).                                                                                         |
 | **Session eviction awareness**       | The default service keeps at most 10 sessions per scope (configurable via `new_with_max_sessions`). Older sessions are silently dropped when the limit is exceeded. Archive results before they are evicted.                                       |
 
@@ -259,6 +266,9 @@ service.scope(&scope)?.fast_consensus().initialize()?;
 
 ### Working with Proposals
 
+Every time-sensitive call takes `now` — the current time in seconds since Unix
+epoch, supplied by the application.
+
 ```rust
 // Create a proposal
 let proposal = service.create_proposal(&scope, CreateProposalRequest::new(
@@ -268,23 +278,23 @@ let proposal = service.create_proposal(&scope, CreateProposalRequest::new(
     3,     // expected voters
     60,    // expiration (seconds from now)
     true,  // liveness: silent peers count as YES at timeout
-)?)?;
+)?, now)?;
 
 // Process a proposal received from the network
-service.process_incoming_proposal(&scope, proposal)?;
+service.process_incoming_proposal(&scope, proposal, now)?;
 ```
 
 ### Casting and Processing Votes
 
 ```rust
 // Cast your vote (yes = true, no = false) using the service's held signer.
-let vote = service.cast_vote(&scope, proposal_id, true)?;
+let vote = service.cast_vote(&scope, proposal_id, true, now)?;
 
 // Cast a vote and get the updated proposal (useful for gossiping).
-let proposal = service.cast_vote_and_get_proposal(&scope, proposal_id, true)?;
+let proposal = service.cast_vote_and_get_proposal(&scope, proposal_id, true, now)?;
 
 // Process a vote received from the network (uses the service's scheme to verify).
-service.process_incoming_vote(&scope, vote)?;
+service.process_incoming_vote(&scope, vote, now)?;
 ```
 
 ### Reading State (via Storage)
@@ -332,7 +342,7 @@ after counting silent peers), which marks the session as failed.
 // Drive the timer however your app prefers, then call the handler when it fires.
 std::thread::sleep(config.consensus_timeout());
 
-match service.handle_consensus_timeout(&scope, proposal_id) {
+match service.handle_consensus_timeout(&scope, proposal_id, now) {
     Ok(true)  => println!("Consensus: YES"),
     Ok(false) => println!("Consensus: NO"),
     Err(ConsensusError::InsufficientVotesAtTimeout) => {
@@ -469,13 +479,13 @@ See `tests/custom_scheme_tests.rs` for a working non-Ethereum example.
 
 The `utils` module provides low-level helpers for advanced use cases:
 
-| Function                              | Description                                                              |
-| ------------------------------------- | ------------------------------------------------------------------------ |
-| `build_vote::<Signer>()`              | Create a signed vote linked into the hashgraph chain                     |
-| `compute_vote_hash()`                 | Compute the deterministic hash of a vote                                 |
-| `validate_proposal::<Signer>()`       | Validate a proposal and all its votes against a signature scheme         |
-| `calculate_consensus_result()`        | Determine result from collected votes using threshold and liveness rules |
-| `has_sufficient_votes()`              | Quick threshold check (count-based)                                      |
+| Function                        | Description                                                              |
+| ------------------------------- | ------------------------------------------------------------------------ |
+| `build_vote::<Signer>()`        | Create a signed vote linked into the hashgraph chain                     |
+| `compute_vote_hash()`           | Compute the deterministic hash of a vote                                 |
+| `validate_proposal::<Signer>()` | Validate a proposal and all its votes against a signature scheme         |
+| `calculate_consensus_result()`  | Determine result from collected votes using threshold and liveness rules |
+| `has_sufficient_votes()`        | Quick threshold check (count-based)                                      |
 
 The generic `Signer` parameter on `build_vote` / `validate_proposal` /
 `validate_vote` selects which `ConsensusSignatureScheme` to use; pick it via

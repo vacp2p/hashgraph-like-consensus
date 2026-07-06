@@ -1,3 +1,6 @@
+mod common;
+use common::{cast_remote_vote, cast_remote_vote_and_get_proposal, make_service, now_ts, wrap};
+
 use alloy::signers::SignerSync;
 use alloy::signers::local::PrivateKeySigner;
 use hashgraph_like_consensus::signing::EthereumConsensusSigner;
@@ -15,44 +18,6 @@ use hashgraph_like_consensus::{
     types::{ConsensusEvent, CreateProposalRequest},
     utils::{build_vote, compute_vote_hash},
 };
-
-fn cast_remote_vote(
-    service: &DefaultConsensusService,
-    scope: &ScopeID,
-    proposal_id: u32,
-    choice: bool,
-    signer: &EthereumConsensusSigner,
-) -> Result<
-    hashgraph_like_consensus::protos::consensus::v1::Vote,
-    hashgraph_like_consensus::error::ConsensusError,
-> {
-    let proposal = service.storage().get_proposal(scope, proposal_id)?;
-    let vote = build_vote(&proposal, choice, signer)?;
-    service.process_incoming_vote(scope, vote.clone())?;
-    Ok(vote)
-}
-
-fn cast_remote_vote_and_get_proposal(
-    service: &DefaultConsensusService,
-    scope: &ScopeID,
-    proposal_id: u32,
-    choice: bool,
-    signer: &EthereumConsensusSigner,
-) -> Result<
-    hashgraph_like_consensus::protos::consensus::v1::Proposal,
-    hashgraph_like_consensus::error::ConsensusError,
-> {
-    cast_remote_vote(service, scope, proposal_id, choice, signer)?;
-    service.storage().get_proposal(scope, proposal_id)
-}
-
-fn make_service() -> DefaultConsensusService {
-    DefaultConsensusService::new(EthereumConsensusSigner::new(PrivateKeySigner::random()))
-}
-
-fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
-    EthereumConsensusSigner::new(signer)
-}
 
 const SCOPE1_NAME: &str = "scope1";
 const SCOPE2_NAME: &str = "scope2";
@@ -92,6 +57,7 @@ fn setup_proposal(
             )
             .expect("valid proposal request"),
             Some(consensus_config),
+            now_ts(),
         )
         .expect("proposal should be created")
 }
@@ -126,6 +92,7 @@ fn test_basic_consensus_flow() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -209,6 +176,7 @@ fn test_multi_scope_isolation() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("scope1 proposal");
 
@@ -234,6 +202,7 @@ fn test_multi_scope_isolation() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("scope2 proposal");
 
@@ -284,6 +253,7 @@ fn test_consensus_threshold_emits_event() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -370,7 +340,7 @@ fn test_handle_consensus_timeout_already_reached() {
 
     // Now call handle_consensus_timeout - should return the already reached consensus
     let result = service
-        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .handle_consensus_timeout(&scope, proposal.proposal_id, now_ts())
         .expect("should return consensus result");
 
     assert!(result, "should return true (YES consensus)");
@@ -415,7 +385,7 @@ fn test_handle_consensus_timeout_reaches_consensus() {
 
     // Call handle_consensus_timeout - should calculate consensus and reach it
     let result = service
-        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .handle_consensus_timeout(&scope, proposal.proposal_id, now_ts())
         .expect("should reach consensus");
 
     assert!(result, "should return true (YES consensus)");
@@ -488,7 +458,7 @@ fn test_handle_consensus_timeout_reaches_no_consensus_with_multiple_votes() {
     );
 
     let result = service
-        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .handle_consensus_timeout(&scope, proposal.proposal_id, now_ts())
         .expect("should reach consensus at timeout");
 
     assert!(!result, "should return false (NO consensus)");
@@ -542,7 +512,7 @@ fn test_handle_consensus_timeout_resolves_with_liveness_yes() {
 
     // At timeout with liveness=true, silent peers count as YES → consensus reached
     let result = service
-        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .handle_consensus_timeout(&scope, proposal.proposal_id, now_ts())
         .expect("should reach consensus with silent peers as YES");
 
     assert!(result, "should return true (YES consensus)");
@@ -614,7 +584,7 @@ fn test_handle_consensus_timeout_insufficient_votes() {
 
     // Call handle_consensus_timeout - should fail (tied votes, no majority)
     let err = service
-        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .handle_consensus_timeout(&scope, proposal.proposal_id, now_ts())
         .expect_err("should fail with insufficient votes");
 
     assert!(
@@ -677,7 +647,7 @@ fn test_handle_consensus_timeout_no_votes_liveness_true() {
     );
 
     let result = service
-        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .handle_consensus_timeout(&scope, proposal.proposal_id, now_ts())
         .expect("should reach consensus with silent peers as YES");
 
     assert!(result, "should return true (all silent peers as YES)");
@@ -722,7 +692,7 @@ fn test_handle_consensus_timeout_no_votes_liveness_false() {
     );
 
     let result = service
-        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .handle_consensus_timeout(&scope, proposal.proposal_id, now_ts())
         .expect("should reach NO consensus with silent peers as NO");
 
     assert!(!result, "should return false (all silent peers as NO)");
@@ -784,7 +754,7 @@ fn test_handle_consensus_timeout_reaches_consensus_p2p() {
     );
 
     let result = service
-        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .handle_consensus_timeout(&scope, proposal.proposal_id, now_ts())
         .expect("should reach consensus");
 
     assert!(result, "should return true (YES consensus)");
@@ -846,7 +816,7 @@ fn test_handle_consensus_timeout_insufficient_votes_p2p() {
     );
 
     let err = service
-        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .handle_consensus_timeout(&scope, proposal.proposal_id, now_ts())
         .expect_err("should fail with insufficient votes");
 
     assert!(
@@ -894,15 +864,16 @@ fn test_cast_vote_rejects_same_voter_twice() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
     service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, now_ts())
         .expect("first vote should succeed");
 
     let err = service
-        .cast_vote(&scope, proposal.proposal_id, VOTE_YES)
+        .cast_vote(&scope, proposal.proposal_id, VOTE_YES, now_ts())
         .expect_err("second vote from same voter should fail");
 
     assert!(
@@ -930,11 +901,12 @@ fn test_process_incoming_proposal_rejects_duplicate_proposal() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
     let err = service
-        .process_incoming_proposal(&scope, proposal)
+        .process_incoming_proposal(&scope, proposal, now_ts())
         .expect_err("duplicate proposal should be rejected");
 
     assert!(
@@ -962,6 +934,7 @@ fn test_process_incoming_vote_rejects_unknown_session() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -988,7 +961,7 @@ fn test_process_incoming_vote_rejects_unknown_session() {
         .to_vec();
 
     let err = service
-        .process_incoming_vote(&scope, invalid_vote)
+        .process_incoming_vote(&scope, invalid_vote, now_ts())
         .expect_err("vote for unknown proposal should fail");
 
     assert!(
@@ -1003,7 +976,7 @@ fn test_handle_consensus_timeout_rejects_unknown_session() {
     let scope = ScopeID::from(SCOPE1_NAME);
 
     let err = service
-        .handle_consensus_timeout(&scope, u32::MAX)
+        .handle_consensus_timeout(&scope, u32::MAX, now_ts())
         .expect_err("timeout handling for unknown proposal should fail");
 
     assert!(
@@ -1027,12 +1000,14 @@ fn test_process_incoming_proposal_rejects_expired_proposal() {
         true,
     )
     .expect("valid proposal request");
-    let proposal = request.into_proposal().expect("proposal should be created");
+    let proposal = request
+        .into_proposal(now_ts())
+        .expect("proposal should be created");
 
     std::thread::sleep(Duration::from_secs(2));
 
     let err = service
-        .process_incoming_proposal(&scope, proposal)
+        .process_incoming_proposal(&scope, proposal, now_ts())
         .expect_err("expired incoming proposal should fail");
 
     assert!(
@@ -1060,6 +1035,7 @@ fn test_process_incoming_vote_rejects_invalid_vote_hash() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -1073,12 +1049,12 @@ fn test_process_incoming_vote_rejects_invalid_vote_hash() {
     .expect("first vote should succeed");
 
     let voter = PrivateKeySigner::random();
-    let mut vote =
-        build_vote(&proposal, VOTE_YES, &wrap(voter)).expect("valid vote should be built");
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter), now_ts())
+        .expect("valid vote should be built");
     vote.vote_hash = vec![1; 32];
 
     let err = service
-        .process_incoming_vote(&scope, vote)
+        .process_incoming_vote(&scope, vote, now_ts())
         .expect_err("tampered vote hash should fail");
 
     assert!(
@@ -1106,6 +1082,7 @@ fn test_process_incoming_vote_rejects_invalid_vote_signature() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -1119,8 +1096,8 @@ fn test_process_incoming_vote_rejects_invalid_vote_signature() {
     .expect("first vote should succeed");
 
     let voter = PrivateKeySigner::random();
-    let mut vote =
-        build_vote(&proposal, VOTE_YES, &wrap(voter)).expect("valid vote should be built");
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter), now_ts())
+        .expect("valid vote should be built");
     let wrong_signer = PrivateKeySigner::random();
     let vote_bytes = vote.encode_to_vec();
     let wrong_sig = wrong_signer
@@ -1129,7 +1106,7 @@ fn test_process_incoming_vote_rejects_invalid_vote_signature() {
     vote.signature = wrong_sig.as_bytes().to_vec();
 
     let err = service
-        .process_incoming_vote(&scope, vote)
+        .process_incoming_vote(&scope, vote, now_ts())
         .expect_err("tampered signature should fail");
 
     assert!(
@@ -1157,6 +1134,7 @@ fn test_process_incoming_vote_rejects_duplicate_vote_owner() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -1169,11 +1147,11 @@ fn test_process_incoming_vote_rejects_duplicate_vote_owner() {
     )
     .expect("first owner vote should succeed");
 
-    let duplicate_vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner))
+    let duplicate_vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner), now_ts())
         .expect("duplicate vote should be signable");
 
     let err = service
-        .process_incoming_vote(&scope, duplicate_vote)
+        .process_incoming_vote(&scope, duplicate_vote, now_ts())
         .expect_err("duplicate vote owner should fail");
 
     assert!(
@@ -1201,6 +1179,7 @@ fn test_process_incoming_vote_rejects_expired_vote_timestamp() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -1214,8 +1193,8 @@ fn test_process_incoming_vote_rejects_expired_vote_timestamp() {
     .expect("first vote should succeed");
 
     let voter = PrivateKeySigner::random();
-    let mut vote =
-        build_vote(&proposal, VOTE_YES, &wrap(voter.clone())).expect("valid vote should be built");
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter.clone()), now_ts())
+        .expect("valid vote should be built");
     vote.timestamp = proposal.expiration_timestamp.saturating_add(1);
     vote.vote_hash = compute_vote_hash(&vote);
     vote.signature.clear();
@@ -1227,7 +1206,7 @@ fn test_process_incoming_vote_rejects_expired_vote_timestamp() {
         .to_vec();
 
     let err = service
-        .process_incoming_vote(&scope, vote)
+        .process_incoming_vote(&scope, vote, now_ts())
         .expect_err("expired vote timestamp should fail");
 
     assert!(
@@ -1256,6 +1235,7 @@ fn test_handle_consensus_timeout_is_idempotent_for_failed_session() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -1279,7 +1259,7 @@ fn test_handle_consensus_timeout_is_idempotent_for_failed_session() {
     .expect("second vote should succeed");
 
     let err_first = service
-        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .handle_consensus_timeout(&scope, proposal.proposal_id, now_ts())
         .expect_err("first timeout should fail consensus");
     assert!(matches!(
         err_first,
@@ -1287,7 +1267,7 @@ fn test_handle_consensus_timeout_is_idempotent_for_failed_session() {
     ));
 
     let err_second = service
-        .handle_consensus_timeout(&scope, proposal.proposal_id)
+        .handle_consensus_timeout(&scope, proposal.proposal_id, now_ts())
         .expect_err("second timeout should keep failed consensus");
     assert!(matches!(
         err_second,
@@ -1306,7 +1286,7 @@ fn test_handle_consensus_timeout_rejects_unknown_scope() {
     let unknown_scope = ScopeID::from("unknown_scope");
 
     let err = service
-        .handle_consensus_timeout(&unknown_scope, 1)
+        .handle_consensus_timeout(&unknown_scope, 1, now_ts())
         .expect_err("unknown scope timeout handling should fail");
 
     assert!(
@@ -1364,7 +1344,7 @@ fn test_process_incoming_proposal_resolve_config_uses_base_timeout_when_expirati
     )
     .expect("valid proposal request");
 
-    let mut incoming = request.into_proposal().expect("proposal");
+    let mut incoming = request.into_proposal(now_ts()).expect("proposal");
 
     // Force expiration_timestamp <= timestamp while keeping both in the future,
     // so proposal remains non-expired but resolve_config must fall back to base timeout.
@@ -1377,7 +1357,7 @@ fn test_process_incoming_proposal_resolve_config_uses_base_timeout_when_expirati
     incoming.expiration_timestamp = future;
 
     service
-        .process_incoming_proposal(&scope, incoming.clone())
+        .process_incoming_proposal(&scope, incoming.clone(), now_ts())
         .expect("incoming proposal should be accepted");
 
     let resolved = service
@@ -1416,6 +1396,7 @@ fn test_get_reached_proposals_with_consensus() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -1468,6 +1449,7 @@ fn test_get_reached_proposals_no_consensus() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -1504,6 +1486,7 @@ fn test_get_reached_proposals_mixed_states() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -1530,6 +1513,7 @@ fn test_get_reached_proposals_mixed_states() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -1556,6 +1540,7 @@ fn test_get_reached_proposals_mixed_states() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 

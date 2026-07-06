@@ -7,6 +7,9 @@
 //! signed by one peer and validated by another round-trip cleanly through the
 //! service without any Ethereum-specific assumptions.
 
+mod common;
+use common::now_ts;
+
 use hashgraph_like_consensus::{
     events::BroadcastEventBus,
     scope::ScopeID,
@@ -107,17 +110,18 @@ fn stub_scheme_reaches_consensus_without_ethereum_types() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
     owner
-        .cast_vote(&scope, proposal.proposal_id, true)
+        .cast_vote(&scope, proposal.proposal_id, true, now_ts())
         .expect("owner vote");
     voter_two
-        .cast_vote(&scope, proposal.proposal_id, true)
+        .cast_vote(&scope, proposal.proposal_id, true, now_ts())
         .expect("voter two");
     voter_three
-        .cast_vote(&scope, proposal.proposal_id, true)
+        .cast_vote(&scope, proposal.proposal_id, true, now_ts())
         .expect("voter three");
 
     let session = owner
@@ -153,15 +157,16 @@ fn stub_scheme_rejects_forged_signature() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
-    let mut vote = build_vote(&proposal, true, &voter).expect("vote");
+    let mut vote = build_vote(&proposal, true, &voter, now_ts()).expect("vote");
     // Tamper with the signature so verify() returns false.
     vote.signature.iter_mut().for_each(|b| *b ^= 0xFF);
 
     let err = owner
-        .process_incoming_vote(&scope, vote)
+        .process_incoming_vote(&scope, vote, now_ts())
         .expect_err("forged signature must be rejected");
     assert!(
         matches!(

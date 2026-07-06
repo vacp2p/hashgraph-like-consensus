@@ -1,55 +1,20 @@
+mod common;
+use common::{
+    cast_remote_vote, cast_remote_vote_and_get_proposal, make_service, now_ts, owner_bytes, wrap,
+};
+
 use alloy::signers::{SignerSync, local::PrivateKeySigner};
-use hashgraph_like_consensus::signing::EthereumConsensusSigner;
 use prost::Message;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hashgraph_like_consensus::{
     error::ConsensusError,
     scope::ScopeID,
-    service::DefaultConsensusService,
     session::ConsensusConfig,
     storage::ConsensusStorage,
     types::CreateProposalRequest,
     utils::{build_vote, compute_vote_hash},
 };
-
-fn cast_remote_vote(
-    service: &DefaultConsensusService,
-    scope: &ScopeID,
-    proposal_id: u32,
-    choice: bool,
-    signer: &EthereumConsensusSigner,
-) -> Result<
-    hashgraph_like_consensus::protos::consensus::v1::Vote,
-    hashgraph_like_consensus::error::ConsensusError,
-> {
-    let proposal = service.storage().get_proposal(scope, proposal_id)?;
-    let vote = build_vote(&proposal, choice, signer)?;
-    service.process_incoming_vote(scope, vote.clone())?;
-    Ok(vote)
-}
-
-fn cast_remote_vote_and_get_proposal(
-    service: &DefaultConsensusService,
-    scope: &ScopeID,
-    proposal_id: u32,
-    choice: bool,
-    signer: &EthereumConsensusSigner,
-) -> Result<
-    hashgraph_like_consensus::protos::consensus::v1::Proposal,
-    hashgraph_like_consensus::error::ConsensusError,
-> {
-    cast_remote_vote(service, scope, proposal_id, choice, signer)?;
-    service.storage().get_proposal(scope, proposal_id)
-}
-
-fn make_service() -> DefaultConsensusService {
-    DefaultConsensusService::new(EthereumConsensusSigner::new(PrivateKeySigner::random()))
-}
-
-fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
-    EthereumConsensusSigner::new(signer)
-}
 
 const SCOPE: &str = "rfc_compliance_scope";
 const PROPOSAL_NAME: &str = "RFC Compliance Test";
@@ -68,10 +33,6 @@ const EXPECTED_VOTERS_COUNT_1: u32 = 1;
 
 const VOTE_YES: bool = true;
 const VOTE_NO: bool = false;
-
-fn owner_bytes(signer: &PrivateKeySigner) -> Vec<u8> {
-    signer.address().as_slice().to_vec()
-}
 
 /// Test that proposal initialization has round = 1
 #[test]
@@ -93,6 +54,7 @@ fn test_proposal_initialization_round_is_one() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -119,6 +81,7 @@ fn test_round_increments_on_vote_p2p() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::p2p()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -179,6 +142,7 @@ fn test_gossipsub_rounds_stay_at_two() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -266,6 +230,7 @@ fn test_gossipsub_allows_multiple_votes_in_round_two() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -331,6 +296,7 @@ fn test_p2p_dynamic_max_rounds() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::p2p()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -420,6 +386,7 @@ fn test_p2p_ceil_calculation_edge_cases() {
                 )
                 .expect("valid proposal request"),
                 Some(ConsensusConfig::p2p()),
+                now_ts(),
             )
             .expect("proposal should be created");
 
@@ -469,26 +436,31 @@ fn test_gossipsub_batch_vote_processing() {
     )
     .expect("valid proposal request");
 
-    let mut proposal = request.into_proposal().expect("proposal should be created");
+    let mut proposal = request
+        .into_proposal(now_ts())
+        .expect("proposal should be created");
 
     // Add votes to the proposal (simulating votes received from network)
     let voter1 = PrivateKeySigner::random();
-    let vote1 = build_vote(&proposal, VOTE_YES, &wrap(voter1)).expect("vote should be created");
+    let vote1 =
+        build_vote(&proposal, VOTE_YES, &wrap(voter1), now_ts()).expect("vote should be created");
     proposal.votes.push(vote1);
     proposal.round = 2; // Gossipsub: round 2 after first vote
 
     let voter2 = PrivateKeySigner::random();
-    let vote2 = build_vote(&proposal, VOTE_YES, &wrap(voter2)).expect("vote should be created");
+    let vote2 =
+        build_vote(&proposal, VOTE_YES, &wrap(voter2), now_ts()).expect("vote should be created");
     proposal.votes.push(vote2);
     // Round stays at 2 for gossipsub
 
     let voter3 = PrivateKeySigner::random();
-    let vote3 = build_vote(&proposal, VOTE_YES, &wrap(voter3)).expect("vote should be created");
+    let vote3 =
+        build_vote(&proposal, VOTE_YES, &wrap(voter3), now_ts()).expect("vote should be created");
     proposal.votes.push(vote3);
 
     // Process the proposal with multiple votes (batch processing)
     // This should work in gossipsub mode - all votes are in round 2
-    let result = service.process_incoming_proposal(&scope, proposal.clone());
+    let result = service.process_incoming_proposal(&scope, proposal.clone(), now_ts());
     assert!(
         result.is_ok(),
         "Gossipsub: Should accept batch votes in round 2"
@@ -533,7 +505,9 @@ fn test_p2p_batch_vote_processing() {
     )
     .expect("valid proposal request");
 
-    let mut proposal = request.into_proposal().expect("proposal should be created");
+    let mut proposal = request
+        .into_proposal(now_ts())
+        .expect("proposal should be created");
 
     // Add votes up to the limit (6 votes)
     let mut voters = vec![proposal_owner];
@@ -542,14 +516,14 @@ fn test_p2p_batch_vote_processing() {
     }
 
     for (i, voter) in voters.iter().enumerate() {
-        let vote =
-            build_vote(&proposal, VOTE_YES, &wrap(voter.clone())).expect("vote should be created");
+        let vote = build_vote(&proposal, VOTE_YES, &wrap(voter.clone()), now_ts())
+            .expect("vote should be created");
         proposal.votes.push(vote);
         proposal.round = (i + 2) as u32; // P2P: round increments per vote
     }
 
     // Process the proposal with 6 votes (at the limit)
-    let result = service.process_incoming_proposal(&scope, proposal.clone());
+    let result = service.process_incoming_proposal(&scope, proposal.clone(), now_ts());
     assert!(
         result.is_ok(),
         "P2P: Should accept batch votes up to ceil(2n/3)"
@@ -619,6 +593,7 @@ fn test_consensus_reachable_in_both_modes() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -661,6 +636,7 @@ fn test_consensus_reachable_in_both_modes() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::p2p()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -708,6 +684,7 @@ fn test_n_le_2_requires_unanimous_yes() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -743,6 +720,7 @@ fn test_n_le_2_requires_unanimous_yes() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -788,6 +766,7 @@ fn test_n_le_2_requires_unanimous_yes() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -844,6 +823,7 @@ fn test_n_gt_2_consensus_requirements() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -913,6 +893,7 @@ fn test_expired_proposal_rejected() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -960,6 +941,7 @@ fn test_timestamp_replay_attack_protection() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -980,7 +962,8 @@ fn test_timestamp_replay_attack_protection() {
         .saturating_sub(EXPIRATION * 2); // More than expiration time
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter.clone())).expect("create vote");
+    let mut vote =
+        build_vote(&proposal, VOTE_YES, &wrap(voter.clone()), now_ts()).expect("create vote");
 
     // Manually set old timestamp
     vote.timestamp = old_timestamp;
@@ -994,7 +977,7 @@ fn test_timestamp_replay_attack_protection() {
         .to_vec();
 
     let err = service
-        .process_incoming_vote(&scope, vote)
+        .process_incoming_vote(&scope, vote, now_ts())
         .expect_err("Should reject vote with old timestamp");
 
     assert!(
@@ -1026,6 +1009,7 @@ fn test_equality_of_votes_handling() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -1100,6 +1084,7 @@ fn test_equality_of_votes_handling() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 

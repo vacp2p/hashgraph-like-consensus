@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::{
     error::ConsensusError,
     protos::consensus::v1::Proposal,
-    utils::{current_timestamp, generate_id, validate_expected_voters_count, validate_timeout},
+    utils::{generate_id, validate_expected_voters_count, validate_timeout},
 };
 
 /// Events emitted by the consensus service when a proposal reaches a terminal state.
@@ -84,11 +84,11 @@ impl CreateProposalRequest {
 
     /// Convert this request into an actual proposal.
     ///
-    /// Generates a unique proposal ID and sets the creation timestamp. The proposal
-    /// starts with round 1 and no votes.
-    pub fn into_proposal(self) -> Result<Proposal, ConsensusError> {
+    /// Generates a unique proposal ID and stamps `now` (seconds since Unix epoch)
+    /// as the creation timestamp; the absolute expiration is derived from it.
+    /// The proposal starts with round 1 and no votes.
+    pub fn into_proposal(self, now: u64) -> Result<Proposal, ConsensusError> {
         let proposal_id = generate_id();
-        let now = current_timestamp()?;
 
         Ok(Proposal {
             name: self.name,
@@ -108,6 +108,7 @@ impl CreateProposalRequest {
 #[cfg(test)]
 mod tests {
     use super::CreateProposalRequest;
+    use crate::test_utils::now_ts;
 
     #[test]
     fn into_proposal_should_not_overflow_expiration_timestamp() {
@@ -124,7 +125,7 @@ mod tests {
         // Desired behavior: proposal creation should not panic on overflow-prone input,
         // and expiration should never be earlier than creation timestamp.
         let proposal = request
-            .into_proposal()
+            .into_proposal(now_ts())
             .expect("proposal creation should handle large expiration safely");
 
         assert!(

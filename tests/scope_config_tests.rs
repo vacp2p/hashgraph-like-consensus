@@ -1,15 +1,12 @@
+mod common;
+use common::{make_service, now_ts};
+
 use std::time::Duration;
 
-use alloy::signers::local::PrivateKeySigner;
 use hashgraph_like_consensus::{
-    error::ConsensusError, scope::ScopeID, scope_config::NetworkType,
-    service::DefaultConsensusService, session::ConsensusConfig, signing::EthereumConsensusSigner,
+    error::ConsensusError, scope::ScopeID, scope_config::NetworkType, session::ConsensusConfig,
     storage::ConsensusStorage, types::CreateProposalRequest,
 };
-
-fn make_service() -> DefaultConsensusService {
-    DefaultConsensusService::new(EthereumConsensusSigner::new(PrivateKeySigner::random()))
-}
 
 const SCOPE_NAME: &str = "test_scope";
 const PROPOSAL_PAYLOAD: Vec<u8> = vec![];
@@ -257,7 +254,7 @@ fn create_proposal_with_config_preserves_override_timeout() {
         .unwrap();
 
     let proposal = service
-        .create_proposal_with_config(&scope, request, Some(override_config))
+        .create_proposal_with_config(&scope, request, Some(override_config), now_ts())
         .unwrap();
 
     let config = service

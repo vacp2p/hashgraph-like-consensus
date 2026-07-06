@@ -1,3 +1,6 @@
+mod common;
+use common::now_ts;
+
 use hashgraph_like_consensus::signing::EthereumConsensusSigner;
 
 use hashgraph_like_consensus::{
@@ -23,12 +26,13 @@ fn make_session(name: &str) -> ConsensusSession {
         true,
     )
     .expect("valid proposal request")
-    .into_proposal()
+    .into_proposal(now_ts())
     .expect("proposal");
 
     let (session, _) = ConsensusSession::from_proposal::<EthereumConsensusSigner>(
         proposal,
         ConsensusConfig::gossipsub(),
+        now_ts(),
     )
     .expect("session");
     session

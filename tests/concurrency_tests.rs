@@ -1,3 +1,6 @@
+mod common;
+use common::{now_ts, wrap};
+
 use alloy::signers::local::PrivateKeySigner;
 use std::{
     sync::{Arc, Barrier},
@@ -15,10 +18,6 @@ use hashgraph_like_consensus::{
     storage::{ConsensusStorage, InMemoryConsensusStorage},
     types::CreateProposalRequest,
 };
-
-fn wrap(signer: PrivateKeySigner) -> EthereumConsensusSigner {
-    EthereumConsensusSigner::new(signer)
-}
 
 fn peer_service(
     storage: &InMemoryConsensusStorage<ScopeID>,
@@ -65,6 +64,7 @@ fn test_concurrent_vote_casting() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -81,7 +81,7 @@ fn test_concurrent_vote_casting() {
         let handle = thread::spawn(move || {
             barrier_clone.wait();
             let peer = peer_service(&storage, &bus, wrap(PrivateKeySigner::random()));
-            peer.cast_vote(&scope_clone, proposal_id, i % 2 == 0)
+            peer.cast_vote(&scope_clone, proposal_id, i % 2 == 0, now_ts())
         });
         handles.push(handle);
     }
@@ -124,6 +124,7 @@ fn test_concurrent_proposal_operations() {
                 )
                 .expect("valid proposal request"),
                 Some(ConsensusConfig::gossipsub()),
+                now_ts(),
             )
         });
         handles.push(handle);
@@ -165,6 +166,7 @@ fn test_concurrent_duplicate_vote_rejection() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal should be created");
 
@@ -178,7 +180,8 @@ fn test_concurrent_duplicate_vote_rejection() {
     for _ in 0..EXPECTED_VOTERS_COUNT_5 {
         let voter = Arc::clone(&voter);
         let scope_clone = scope.clone();
-        let handle = thread::spawn(move || voter.cast_vote(&scope_clone, proposal_id, true));
+        let handle =
+            thread::spawn(move || voter.cast_vote(&scope_clone, proposal_id, true, now_ts()));
         handles.push(handle);
     }
 

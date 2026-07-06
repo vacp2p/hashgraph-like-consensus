@@ -13,7 +13,7 @@ use crate::{
     signing::ConsensusSignatureScheme,
     types::SessionTransition,
     utils::{
-        calculate_consensus_result, calculate_max_rounds, current_timestamp, validate_proposal,
+        calculate_consensus_result, calculate_max_rounds, validate_proposal,
         validate_proposal_timestamp, validate_vote, validate_vote_chain,
     },
 };
@@ -180,8 +180,8 @@ pub struct ConsensusSession {
 impl ConsensusSession {
     /// Create a new session from a validated proposal (no votes).
     /// Used when creating proposals locally where we know the proposal is clean.
-    fn new(proposal: Proposal, config: ConsensusConfig) -> Self {
-        let now = current_timestamp().unwrap_or(0);
+    /// `now` (seconds since Unix epoch) becomes `created_at`.
+    fn new(proposal: Proposal, config: ConsensusConfig, now: u64) -> Self {
         Self {
             proposal,
             state: ConsensusState::Active,
@@ -194,11 +194,13 @@ impl ConsensusSession {
     /// Create a session from a proposal, validating the proposal and all votes.
     /// This validates the proposal structure, vote chain, and individual votes before creating the session.
     /// The session is created with votes already processed and rounds correctly set.
+    /// `now` (seconds since Unix epoch) drives expiration checks and `created_at`.
     pub fn from_proposal<Signer: ConsensusSignatureScheme>(
         proposal: Proposal,
         config: ConsensusConfig,
+        now: u64,
     ) -> Result<(Self, SessionTransition), ConsensusError> {
-        validate_proposal::<Signer>(&proposal)?;
+        validate_proposal::<Signer>(&proposal, now)?;
 
         // Create clean proposal for session (votes will be added via initialize_with_votes)
         let existing_votes = proposal.votes.clone();
@@ -207,21 +209,27 @@ impl ConsensusSession {
         // Always start with round 1 for new proposals as we at least have the proposal owner's vote.
         clean_proposal.round = 1;
 
-        let mut session = Self::new(clean_proposal, config);
+        let mut session = Self::new(clean_proposal, config, now);
         let transition = session.initialize_with_votes::<Signer>(
             existing_votes,
             proposal.expiration_timestamp,
             proposal.timestamp,
+            now,
         )?;
 
         Ok((session, transition))
     }
 
-    /// Add a vote to the session.
-    pub(crate) fn add_vote(&mut self, vote: Vote) -> Result<SessionTransition, ConsensusError> {
+    /// Add a vote to the session. Expiration is checked against `now`
+    /// (seconds since Unix epoch).
+    pub(crate) fn add_vote(
+        &mut self,
+        vote: Vote,
+        now: u64,
+    ) -> Result<SessionTransition, ConsensusError> {
         match self.state {
             ConsensusState::Active => {
-                validate_proposal_timestamp(self.proposal.expiration_timestamp)?;
+                validate_proposal_timestamp(self.proposal.expiration_timestamp, now)?;
 
                 // Check if adding this vote would exceed round limits
                 self.check_round_limit(1)?;
@@ -247,12 +255,13 @@ impl ConsensusSession {
         votes: Vec<Vote>,
         expiration_timestamp: u64,
         creation_time: u64,
+        now: u64,
     ) -> Result<SessionTransition, ConsensusError> {
         if !matches!(self.state, ConsensusState::Active) {
             return Err(ConsensusError::SessionNotActive);
         }
 
-        validate_proposal_timestamp(expiration_timestamp)?;
+        validate_proposal_timestamp(expiration_timestamp, now)?;
 
         if votes.is_empty() {
             return Ok(SessionTransition::StillActive);
@@ -274,7 +283,7 @@ impl ConsensusSession {
 
         validate_vote_chain(&votes)?;
         for vote in &votes {
-            validate_vote::<Signer>(vote, expiration_timestamp, creation_time)?;
+            validate_vote::<Signer>(vote, expiration_timestamp, creation_time, now)?;
         }
 
         self.check_round_limit(votes.len())?;
@@ -405,6 +414,7 @@ mod tests {
         error::ConsensusError,
         session::{ConsensusConfig, ConsensusSession, ConsensusState},
         signing::EthereumConsensusSigner,
+        test_utils::now_ts,
         types::CreateProposalRequest,
         utils::build_vote,
     };
@@ -432,28 +442,28 @@ mod tests {
         )
         .unwrap();
 
-        let proposal = request.into_proposal().unwrap();
+        let proposal = request.into_proposal(now_ts()).unwrap();
         let config = ConsensusConfig::gossipsub();
-        let mut session = ConsensusSession::new(proposal, config);
+        let mut session = ConsensusSession::new(proposal, config, now_ts());
 
         // Round 1 -> Round 2 (first vote)
-        let vote1 = build_vote(&session.proposal, true, &wrap(signer1)).unwrap();
-        session.add_vote(vote1).unwrap();
+        let vote1 = build_vote(&session.proposal, true, &wrap(signer1), now_ts()).unwrap();
+        session.add_vote(vote1, now_ts()).unwrap();
         assert_eq!(session.proposal.round, 2);
 
         // Stay at round 2 (second vote)
-        let vote2 = build_vote(&session.proposal, false, &wrap(signer2)).unwrap();
-        session.add_vote(vote2).unwrap();
+        let vote2 = build_vote(&session.proposal, false, &wrap(signer2), now_ts()).unwrap();
+        session.add_vote(vote2, now_ts()).unwrap();
         assert_eq!(session.proposal.round, 2);
 
         // Stay at round 2 (third vote)
-        let vote3 = build_vote(&session.proposal, true, &wrap(signer3)).unwrap();
-        session.add_vote(vote3).unwrap();
+        let vote3 = build_vote(&session.proposal, true, &wrap(signer3), now_ts()).unwrap();
+        session.add_vote(vote3, now_ts()).unwrap();
         assert_eq!(session.proposal.round, 2);
 
         // Stay at round 2 (fourth vote) - should succeed
-        let vote4 = build_vote(&session.proposal, true, &wrap(signer4)).unwrap();
-        session.add_vote(vote4).unwrap();
+        let vote4 = build_vote(&session.proposal, true, &wrap(signer4), now_ts()).unwrap();
+        session.add_vote(vote4, now_ts()).unwrap();
         assert_eq!(session.proposal.round, 2);
         assert_eq!(session.votes.len(), 4);
     }
@@ -479,37 +489,37 @@ mod tests {
         )
         .unwrap();
 
-        let proposal = request.into_proposal().unwrap();
+        let proposal = request.into_proposal(now_ts()).unwrap();
         let config = ConsensusConfig::p2p();
-        let mut session = ConsensusSession::new(proposal, config);
+        let mut session = ConsensusSession::new(proposal, config, now_ts());
 
         // Round 1 -> Round 2 (first vote, 1 vote total)
-        let vote1 = build_vote(&session.proposal, true, &wrap(signer1)).unwrap();
-        session.add_vote(vote1).unwrap();
+        let vote1 = build_vote(&session.proposal, true, &wrap(signer1), now_ts()).unwrap();
+        session.add_vote(vote1, now_ts()).unwrap();
         assert_eq!(session.proposal.round, 2);
         assert_eq!(session.votes.len(), 1);
 
         // Round 2 -> Round 3 (second vote, 2 votes total) - should succeed
-        let vote2 = build_vote(&session.proposal, false, &wrap(signer2)).unwrap();
-        session.add_vote(vote2).unwrap();
+        let vote2 = build_vote(&session.proposal, false, &wrap(signer2), now_ts()).unwrap();
+        session.add_vote(vote2, now_ts()).unwrap();
         assert_eq!(session.proposal.round, 3);
         assert_eq!(session.votes.len(), 2);
 
         // Round 3 -> Round 4 (third vote, 3 votes total) - should succeed
-        let vote3 = build_vote(&session.proposal, true, &wrap(signer3)).unwrap();
-        session.add_vote(vote3).unwrap();
+        let vote3 = build_vote(&session.proposal, true, &wrap(signer3), now_ts()).unwrap();
+        session.add_vote(vote3, now_ts()).unwrap();
         assert_eq!(session.proposal.round, 4);
         assert_eq!(session.votes.len(), 3);
 
         // Round 4 -> Round 5 (fourth vote, 4 votes total) - should succeed (dynamic limit = 4)
-        let vote4 = build_vote(&session.proposal, true, &wrap(signer4)).unwrap();
-        session.add_vote(vote4).unwrap();
+        let vote4 = build_vote(&session.proposal, true, &wrap(signer4), now_ts()).unwrap();
+        session.add_vote(vote4, now_ts()).unwrap();
         assert_eq!(session.proposal.round, 5);
         assert_eq!(session.votes.len(), 4);
 
         // Fifth vote would exceed dynamic max_round_limit (=4 votes)
-        let vote5 = build_vote(&session.proposal, true, &wrap(signer5)).unwrap();
-        let err = session.add_vote(vote5).unwrap_err();
+        let vote5 = build_vote(&session.proposal, true, &wrap(signer5), now_ts()).unwrap();
+        let err = session.add_vote(vote5, now_ts()).unwrap_err();
         assert!(matches!(err, ConsensusError::MaxRoundsExceeded));
     }
 
@@ -553,21 +563,28 @@ mod tests {
             true,
         )
         .unwrap();
-        let proposal = request.into_proposal().unwrap();
+        let proposal = request.into_proposal(now_ts()).unwrap();
 
         // Failed sessions reject new votes.
         let mut failed_session =
-            ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub());
+            ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub(), now_ts());
         failed_session.state = ConsensusState::Failed;
-        let vote = build_vote(&failed_session.proposal, true, &wrap(signer.clone())).unwrap();
-        let err = failed_session.add_vote(vote).unwrap_err();
+        let vote = build_vote(
+            &failed_session.proposal,
+            true,
+            &wrap(signer.clone()),
+            now_ts(),
+        )
+        .unwrap();
+        let err = failed_session.add_vote(vote, now_ts()).unwrap_err();
         assert!(matches!(err, ConsensusError::SessionNotActive));
 
         // Finalized sessions return existing transition/result.
-        let mut finalized_session = ConsensusSession::new(proposal, ConsensusConfig::gossipsub());
+        let mut finalized_session =
+            ConsensusSession::new(proposal, ConsensusConfig::gossipsub(), now_ts());
         finalized_session.state = ConsensusState::ConsensusReached(true);
-        let vote = build_vote(&finalized_session.proposal, true, &wrap(signer)).unwrap();
-        let transition = finalized_session.add_vote(vote).unwrap();
+        let vote = build_vote(&finalized_session.proposal, true, &wrap(signer), now_ts()).unwrap();
+        let transition = finalized_session.add_vote(vote, now_ts()).unwrap();
         assert!(matches!(
             transition,
             crate::types::SessionTransition::ConsensusReached(true)
@@ -586,35 +603,41 @@ mod tests {
             true,
         )
         .unwrap();
-        let proposal = request.into_proposal().unwrap();
+        let proposal = request.into_proposal(now_ts()).unwrap();
 
         // Non-active sessions reject initialization.
-        let mut inactive = ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub());
+        let mut inactive =
+            ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub(), now_ts());
         inactive.state = ConsensusState::Failed;
         let err = inactive
             .initialize_with_votes::<EthereumConsensusSigner>(
                 vec![],
                 proposal.expiration_timestamp,
                 proposal.timestamp,
+                now_ts(),
             )
             .unwrap_err();
         assert!(matches!(err, ConsensusError::SessionNotActive));
 
         // Duplicate owners are rejected before chain/signature checks.
-        let mut dup_session = ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub());
-        let vote1 = build_vote(&dup_session.proposal, true, &wrap(signer.clone())).unwrap();
-        let vote2 = build_vote(&dup_session.proposal, false, &wrap(signer)).unwrap();
+        let mut dup_session =
+            ConsensusSession::new(proposal.clone(), ConsensusConfig::gossipsub(), now_ts());
+        let vote1 =
+            build_vote(&dup_session.proposal, true, &wrap(signer.clone()), now_ts()).unwrap();
+        let vote2 = build_vote(&dup_session.proposal, false, &wrap(signer), now_ts()).unwrap();
         let err = dup_session
             .initialize_with_votes::<EthereumConsensusSigner>(
                 vec![vote1, vote2],
                 proposal.expiration_timestamp,
                 proposal.timestamp,
+                now_ts(),
             )
             .unwrap_err();
         assert!(matches!(err, ConsensusError::DuplicateVote));
 
         // Explicitly exercise gossipsub projected round branch where vote_count == 0.
-        let mut zero_votes = ConsensusSession::new(proposal, ConsensusConfig::gossipsub());
+        let mut zero_votes =
+            ConsensusSession::new(proposal, ConsensusConfig::gossipsub(), now_ts());
         zero_votes.check_round_limit(0).unwrap();
     }
 
@@ -635,8 +658,8 @@ mod tests {
         )
         .unwrap();
 
-        let proposal = request.into_proposal().unwrap();
-        let mut session = ConsensusSession::new(proposal, ConsensusConfig::p2p());
+        let proposal = request.into_proposal(now_ts()).unwrap();
+        let mut session = ConsensusSession::new(proposal, ConsensusConfig::p2p(), now_ts());
 
         let wrapped_vote_count = (u32::MAX as usize) + 1;
 
@@ -661,8 +684,8 @@ mod tests {
         )
         .unwrap();
 
-        let proposal = request.into_proposal().unwrap();
-        let mut session = ConsensusSession::new(proposal, ConsensusConfig::p2p());
+        let proposal = request.into_proposal(now_ts()).unwrap();
+        let mut session = ConsensusSession::new(proposal, ConsensusConfig::p2p(), now_ts());
         let starting_round = session.proposal.round;
 
         // vote_count at the u32 boundary should still advance the round via saturating_add

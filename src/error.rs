@@ -71,6 +71,4 @@ pub enum ConsensusError {
 
     #[error("Signature scheme failure: {0}")]
     SignatureScheme(#[from] ConsensusSchemeError),
-    #[error("Failed to get current time")]
-    FailedToGetCurrentTime(#[from] std::time::SystemTimeError),
 }
