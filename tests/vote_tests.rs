@@ -1,3 +1,6 @@
+mod common;
+use common::now_ts;
+
 use alloy::signers::local::PrivateKeySigner;
 
 use hashgraph_like_consensus::{
@@ -42,15 +45,16 @@ fn test_received_hash_for_new_voter() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal");
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, now_ts())
         .expect("proposal_owner vote");
 
     let other_voter = wrap(PrivateKeySigner::random());
-    let vote = build_vote(&proposal, VOTE_YES, &other_voter).expect("second vote");
+    let vote = build_vote(&proposal, VOTE_YES, &other_voter, now_ts()).expect("second vote");
 
     assert!(
         vote.parent_hash.is_empty(),
@@ -63,7 +67,7 @@ fn test_received_hash_for_new_voter() {
 
     let mut proposal_with_vote = proposal.clone();
     proposal_with_vote.votes.push(vote);
-    validate_proposal::<EthereumConsensusSigner>(&proposal_with_vote)
+    validate_proposal::<EthereumConsensusSigner>(&proposal_with_vote, now_ts())
         .expect("proposal with second voter should validate");
 }
 
@@ -86,15 +90,17 @@ fn test_parent_hash_for_same_voter() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal");
 
     let proposal = service
-        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES)
+        .cast_vote_and_get_proposal(&scope, proposal.proposal_id, VOTE_YES, now_ts())
         .expect("proposal_owner vote");
 
     // Create a second vote from the same voter to exercise parent_hash logic.
-    let second_vote = build_vote(&proposal, VOTE_NO, &proposal_owner).expect("second vote");
+    let second_vote =
+        build_vote(&proposal, VOTE_NO, &proposal_owner, now_ts()).expect("second vote");
 
     assert!(
         second_vote.received_hash == proposal.votes[0].vote_hash,
@@ -107,6 +113,6 @@ fn test_parent_hash_for_same_voter() {
 
     let mut proposal_with_vote = proposal.clone();
     proposal_with_vote.votes.push(second_vote);
-    validate_proposal::<EthereumConsensusSigner>(&proposal_with_vote)
+    validate_proposal::<EthereumConsensusSigner>(&proposal_with_vote, now_ts())
         .expect("proposal with parent hash chain should validate");
 }

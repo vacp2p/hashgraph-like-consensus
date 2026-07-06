@@ -6,10 +6,7 @@
 
 use prost::Message;
 use sha2::{Digest, Sha256};
-use std::{
-    collections::HashMap,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, time::Duration};
 use uuid::Uuid;
 
 use crate::{
@@ -54,13 +51,13 @@ pub fn compute_vote_hash(vote: &Vote) -> Vec<u8> {
 /// This builds a vote that links to previous votes in the hashgraph structure.
 /// The vote is signed with the provided signer and includes all the necessary
 /// fields for validation (parent_hash, received_hash, vote_hash, signature).
+/// `now` (seconds since Unix epoch) becomes the vote's timestamp.
 pub fn build_vote<Signer: ConsensusSignatureScheme>(
     proposal: &Proposal,
     user_vote: bool,
     signer: &Signer,
+    now: u64,
 ) -> Result<Vote, ConsensusError> {
-    let now = current_timestamp()?;
-
     let voter_identity = signer.identity();
     // RFC Section 2.2: Define `parent_hash` as hash of previous owner's vote (empty if none).
     // RFC Section 2.3: Set `received_hash` to hash of immediately previous vote (last vote in list).
@@ -102,20 +99,21 @@ pub fn build_vote<Signer: ConsensusSignatureScheme>(
 
 /// Validate a proposal and all its votes against a signature scheme.
 ///
-/// Checks that the proposal hasn't expired.
+/// Checks that the proposal hasn't expired as of `now` (seconds since Unix epoch).
 /// Also validates that all votes belong to this proposal, vote signatures are valid,
 /// and the vote chain (parent_hash/received_hash) is correct.
 /// Should be called when receiving a proposal from the network.
 pub fn validate_proposal<Signer: ConsensusSignatureScheme>(
     proposal: &Proposal,
+    now: u64,
 ) -> Result<(), ConsensusError> {
-    validate_proposal_timestamp(proposal.expiration_timestamp)?;
+    validate_proposal_timestamp(proposal.expiration_timestamp, now)?;
 
     for vote in proposal.votes.iter() {
         if vote.proposal_id != proposal.proposal_id {
             return Err(ConsensusError::VoteProposalIdMismatch);
         }
-        validate_vote::<Signer>(vote, proposal.expiration_timestamp, proposal.timestamp)?;
+        validate_vote::<Signer>(vote, proposal.expiration_timestamp, proposal.timestamp, now)?;
     }
     validate_vote_chain(&proposal.votes)?;
     Ok(())
@@ -130,6 +128,7 @@ pub(crate) fn validate_vote<Signer: ConsensusSignatureScheme>(
     vote: &Vote,
     expiration_timestamp: u64,
     creation_time: u64,
+    now: u64,
 ) -> Result<(), ConsensusError> {
     if vote.vote_owner.is_empty() {
         return Err(ConsensusError::EmptyVoteOwner);
@@ -157,8 +156,6 @@ pub(crate) fn validate_vote<Signer: ConsensusSignatureScheme>(
     if !verified {
         return Err(ConsensusError::InvalidVoteSignature);
     }
-
-    let now = current_timestamp()?;
 
     // RFC Section 3.4:  Check the `timestamp` against the replay attack.
     // In particular, the `timestamp` cannot be the old in the determined threshold.
@@ -315,18 +312,15 @@ fn calculate_threshold_based_value(expected_voters: u32, consensus_threshold: f6
     }
 }
 
-pub(crate) fn current_timestamp() -> Result<u64, ConsensusError> {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    Ok(now)
-}
-
 /// Check if a proposal has expired.
 ///
 /// RFC Section 2.5.4: Verifies that the proposal has not expired by checking that
-/// the current time is less than the expiration timestamp.
+/// `now` (seconds since Unix epoch) is less than the expiration timestamp.
 /// Returns an error if the proposal has expired.
-pub(crate) fn validate_proposal_timestamp(expiration_timestamp: u64) -> Result<(), ConsensusError> {
-    let now = current_timestamp()?;
+pub(crate) fn validate_proposal_timestamp(
+    expiration_timestamp: u64,
+    now: u64,
+) -> Result<(), ConsensusError> {
     if now >= expiration_timestamp {
         return Err(ConsensusError::ProposalExpired);
     }

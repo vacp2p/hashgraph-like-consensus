@@ -25,6 +25,9 @@
 //!   [`handle_consensus_timeout`](service::ConsensusService::handle_consensus_timeout)
 //!   when it fires. Without this, proposals with offline voters stay `Active`
 //!   forever and silent-peer liveness logic never runs.
+//! - **Time source** — every time-sensitive method takes `now` (seconds since
+//!   Unix epoch) as a parameter, so the application controls where time comes
+//!   from (system time, a test clock, etc.).
 //! - **`expected_voters_count` accuracy** — this drives all threshold math;
 //!   a wrong value produces wrong results.
 //! - **Session eviction awareness** — the default service keeps at most 10
@@ -59,11 +62,14 @@
 //!     types::CreateProposalRequest,
 //! };
 //! use alloy::signers::local::PrivateKeySigner;
+//! use std::time::{SystemTime, UNIX_EPOCH};
 //!
 //! # fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let signer = EthereumConsensusSigner::new(PrivateKeySigner::random());
 //! let service = DefaultConsensusService::new(signer.clone());
 //! let scope = ScopeID::from("my-scope");
+//! // The caller supplies the current time (seconds since Unix epoch).
+//! let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 //!
 //! let proposal = service
 //!     .create_proposal(
@@ -76,9 +82,10 @@
 //!             60,   // expiration (seconds from now)
 //!             true, // liveness: silent peers count as YES at timeout
 //!         )?,
+//!         now,
 //!     )?;
 //!
-//! let vote = service.cast_vote(&scope, proposal.proposal_id, true)?;
+//! let vote = service.cast_vote(&scope, proposal.proposal_id, true, now)?;
 //! # Ok(())
 //! # }
 //! ```
@@ -117,3 +124,6 @@ pub mod signing;
 pub mod storage;
 pub mod types;
 pub mod utils;
+
+#[cfg(test)]
+pub(crate) mod test_utils;

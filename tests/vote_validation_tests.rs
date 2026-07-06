@@ -1,3 +1,6 @@
+mod common;
+use common::now_ts;
+
 use alloy::signers::{SignerSync, local::PrivateKeySigner};
 use hashgraph_like_consensus::signing::EthereumConsensusSigner;
 
@@ -24,8 +27,8 @@ fn cast_remote_vote(
     hashgraph_like_consensus::error::ConsensusError,
 > {
     let proposal = service.storage().get_proposal(scope, proposal_id)?;
-    let vote = build_vote(&proposal, choice, signer)?;
-    service.process_incoming_vote(scope, vote.clone())?;
+    let vote = build_vote(&proposal, choice, signer, now_ts())?;
+    service.process_incoming_vote(scope, vote.clone(), now_ts())?;
     Ok(vote)
 }
 
@@ -100,6 +103,7 @@ fn test_vote_created_with_helper_is_valid() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal");
 
@@ -113,10 +117,11 @@ fn test_vote_created_with_helper_is_valid() {
     .expect("proposal_owner vote");
 
     let voter = PrivateKeySigner::random();
-    let vote = build_vote(&proposal, VOTE_YES, &wrap(voter)).expect("vote should be created");
+    let vote =
+        build_vote(&proposal, VOTE_YES, &wrap(voter), now_ts()).expect("vote should be created");
 
     service
-        .process_incoming_vote(&scope, vote)
+        .process_incoming_vote(&scope, vote, now_ts())
         .expect("vote should validate");
 }
 
@@ -139,6 +144,7 @@ fn test_invalid_signature_is_rejected() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal");
 
@@ -152,7 +158,7 @@ fn test_invalid_signature_is_rejected() {
     .expect("proposal_owner vote");
 
     let voter = PrivateKeySigner::random();
-    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter)).expect("vote");
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(voter), now_ts()).expect("vote");
 
     let wrong_signer = PrivateKeySigner::random();
     let vote_bytes = vote.encode_to_vec();
@@ -164,7 +170,7 @@ fn test_invalid_signature_is_rejected() {
     let mut invalid_proposal = proposal.clone();
     invalid_proposal.votes.push(vote);
 
-    let err = validate_proposal::<EthereumConsensusSigner>(&invalid_proposal)
+    let err = validate_proposal::<EthereumConsensusSigner>(&invalid_proposal, now_ts())
         .expect_err("validation should fail");
     assert!(
         matches!(err, ConsensusError::InvalidVoteSignature),
@@ -191,6 +197,7 @@ fn test_vote_chain_validation_rejects_bad_received_hash() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal");
 
@@ -206,8 +213,9 @@ fn test_vote_chain_validation_rejects_bad_received_hash() {
     let voter_one = PrivateKeySigner::random();
     let voter_two = PrivateKeySigner::random();
 
-    let vote_one = build_vote(&proposal, VOTE_YES, &wrap(voter_one)).expect("vote one");
-    let mut vote_two = build_vote(&proposal, VOTE_NO, &wrap(voter_two.clone())).expect("vote two");
+    let vote_one = build_vote(&proposal, VOTE_YES, &wrap(voter_one), now_ts()).expect("vote one");
+    let mut vote_two =
+        build_vote(&proposal, VOTE_NO, &wrap(voter_two.clone()), now_ts()).expect("vote two");
 
     vote_two.received_hash = vec![0; 32];
     vote_two.vote_hash = compute_vote_hash(&vote_two);
@@ -223,7 +231,7 @@ fn test_vote_chain_validation_rejects_bad_received_hash() {
     invalid.votes.push(vote_one);
     invalid.votes.push(vote_two);
 
-    let err = validate_proposal::<EthereumConsensusSigner>(&invalid)
+    let err = validate_proposal::<EthereumConsensusSigner>(&invalid, now_ts())
         .expect_err("should fail chain validation");
     assert!(
         matches!(err, ConsensusError::ReceivedHashMismatch),
@@ -250,16 +258,17 @@ fn test_validate_proposal_rejects_empty_vote_owner() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal");
 
-    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner)).expect("vote");
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner), now_ts()).expect("vote");
     vote.vote_owner.clear();
 
     let mut invalid = proposal;
     invalid.votes.push(vote);
 
-    let err = validate_proposal::<EthereumConsensusSigner>(&invalid)
+    let err = validate_proposal::<EthereumConsensusSigner>(&invalid, now_ts())
         .expect_err("empty vote owner should fail");
     assert!(matches!(err, ConsensusError::EmptyVoteOwner));
 }
@@ -283,16 +292,17 @@ fn test_validate_proposal_rejects_empty_vote_hash() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal");
 
-    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner)).expect("vote");
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner), now_ts()).expect("vote");
     vote.vote_hash.clear();
 
     let mut invalid = proposal;
     invalid.votes.push(vote);
 
-    let err = validate_proposal::<EthereumConsensusSigner>(&invalid)
+    let err = validate_proposal::<EthereumConsensusSigner>(&invalid, now_ts())
         .expect_err("empty vote hash should fail");
     assert!(matches!(err, ConsensusError::EmptyVoteHash));
 }
@@ -316,16 +326,17 @@ fn test_validate_proposal_rejects_empty_signature() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal");
 
-    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner)).expect("vote");
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner), now_ts()).expect("vote");
     vote.signature.clear();
 
     let mut invalid = proposal;
     invalid.votes.push(vote);
 
-    let err = validate_proposal::<EthereumConsensusSigner>(&invalid)
+    let err = validate_proposal::<EthereumConsensusSigner>(&invalid, now_ts())
         .expect_err("empty signature should fail");
     assert!(matches!(err, ConsensusError::EmptySignature));
 }
@@ -349,16 +360,17 @@ fn test_validate_proposal_rejects_mismatched_signature_length() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal");
 
-    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner)).expect("vote");
+    let mut vote = build_vote(&proposal, VOTE_YES, &wrap(proposal_owner), now_ts()).expect("vote");
     vote.signature = vec![7; 64];
 
     let mut invalid = proposal;
     invalid.votes.push(vote);
 
-    let err = validate_proposal::<EthereumConsensusSigner>(&invalid)
+    let err = validate_proposal::<EthereumConsensusSigner>(&invalid, now_ts())
         .expect_err("invalid signature length should fail");
     // Signature-length checks now live in the scheme and surface as a
     // SignatureScheme error rather than a protocol-level MismatchedLength variant.
@@ -384,14 +396,16 @@ fn test_vote_chain_validation_rejects_bad_parent_hash_owner_mismatch() {
             )
             .expect("valid proposal request"),
             Some(ConsensusConfig::gossipsub()),
+            now_ts(),
         )
         .expect("proposal");
 
     let voter_one = PrivateKeySigner::random();
     let voter_two = PrivateKeySigner::random();
 
-    let vote_one = build_vote(&proposal, VOTE_YES, &wrap(voter_one)).expect("vote one");
-    let mut vote_two = build_vote(&proposal, VOTE_NO, &wrap(voter_two.clone())).expect("vote two");
+    let vote_one = build_vote(&proposal, VOTE_YES, &wrap(voter_one), now_ts()).expect("vote one");
+    let mut vote_two =
+        build_vote(&proposal, VOTE_NO, &wrap(voter_two.clone()), now_ts()).expect("vote two");
 
     // parent_hash points to another owner's vote, which should fail RFC parent-chain checks.
     vote_two.parent_hash = vote_one.vote_hash.clone();
@@ -401,7 +415,7 @@ fn test_vote_chain_validation_rejects_bad_parent_hash_owner_mismatch() {
     invalid.votes.push(vote_one);
     invalid.votes.push(vote_two);
 
-    let err = validate_proposal::<EthereumConsensusSigner>(&invalid)
+    let err = validate_proposal::<EthereumConsensusSigner>(&invalid, now_ts())
         .expect_err("parent hash owner mismatch should fail");
     assert!(matches!(err, ConsensusError::ParentHashMismatch));
 }

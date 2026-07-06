@@ -1,3 +1,6 @@
+mod common;
+use common::now_ts;
+
 use std::time::Duration;
 
 use alloy::signers::local::PrivateKeySigner;
@@ -257,7 +260,7 @@ fn create_proposal_with_config_preserves_override_timeout() {
         .unwrap();
 
     let proposal = service
-        .create_proposal_with_config(&scope, request, Some(override_config))
+        .create_proposal_with_config(&scope, request, Some(override_config), now_ts())
         .unwrap();
 
     let config = service

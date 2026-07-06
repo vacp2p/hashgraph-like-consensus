@@ -11,10 +11,7 @@ use crate::{
     signing::ConsensusSignatureScheme,
     storage::ConsensusStorage,
     types::{ConsensusEvent, CreateProposalRequest, SessionTransition},
-    utils::{
-        build_vote, calculate_consensus_result, current_timestamp, validate_proposal_timestamp,
-        validate_vote,
-    },
+    utils::{build_vote, calculate_consensus_result, validate_proposal_timestamp, validate_vote},
 };
 #[cfg(feature = "ethereum")]
 use crate::{
@@ -181,12 +178,15 @@ where
     ///
     /// Configuration is resolved from: proposal config > scope config > global default.
     /// If no config is provided, the scope's default configuration is used.
+    ///
+    /// `now` is the current time in seconds since Unix epoch, supplied by the caller.
     pub fn create_proposal(
         &self,
         scope: &Scope,
         request: CreateProposalRequest,
+        now: u64,
     ) -> Result<Proposal, ConsensusError> {
-        self.create_proposal_with_config(scope, request, None)
+        self.create_proposal_with_config(scope, request, None, now)
     }
 
     /// Create a new proposal with an explicit [`ConsensusConfig`] override.
@@ -197,11 +197,12 @@ where
         scope: &Scope,
         request: CreateProposalRequest,
         config: Option<ConsensusConfig>,
+        now: u64,
     ) -> Result<Proposal, ConsensusError> {
-        let proposal = request.into_proposal()?;
+        let proposal = request.into_proposal(now)?;
         let config = self.resolve_config(scope, config, Some(&proposal))?;
         let (session, _) =
-            ConsensusSession::from_proposal::<Signer>(proposal.clone(), config.clone())?;
+            ConsensusSession::from_proposal::<Signer>(proposal.clone(), config.clone(), now)?;
         self.save_session(scope, session)?;
         self.trim_scope_sessions(scope)?;
         Ok(proposal)
@@ -217,20 +218,21 @@ where
         scope: &Scope,
         proposal_id: u32,
         choice: bool,
+        now: u64,
     ) -> Result<Vote, ConsensusError> {
         let session = self.get_session(scope, proposal_id)?;
-        validate_proposal_timestamp(session.proposal.expiration_timestamp)?;
+        validate_proposal_timestamp(session.proposal.expiration_timestamp, now)?;
 
         if session.votes.contains_key(self.signer.identity()) {
             return Err(ConsensusError::UserAlreadyVoted);
         }
 
-        let vote = build_vote(&session.proposal, choice, &self.signer)?;
+        let vote = build_vote(&session.proposal, choice, &self.signer, now)?;
         let vote_clone = vote.clone();
         let transition = self.update_session(scope, proposal_id, move |session| {
-            session.add_vote(vote_clone)
+            session.add_vote(vote_clone, now)
         })?;
-        self.handle_transition(scope, proposal_id, transition);
+        self.handle_transition(scope, proposal_id, transition, now);
         Ok(vote)
     }
 
@@ -243,8 +245,9 @@ where
         scope: &Scope,
         proposal_id: u32,
         choice: bool,
+        now: u64,
     ) -> Result<Proposal, ConsensusError> {
-        self.cast_vote(scope, proposal_id, choice)?;
+        self.cast_vote(scope, proposal_id, choice, now)?;
         let session = self.get_session(scope, proposal_id)?;
         Ok(session.proposal)
     }
@@ -261,13 +264,15 @@ where
         &self,
         scope: &Scope,
         proposal: Proposal,
+        now: u64,
     ) -> Result<(), ConsensusError> {
         if self.get_session(scope, proposal.proposal_id).is_ok() {
             return Err(ConsensusError::ProposalAlreadyExist);
         }
         let config = self.resolve_config(scope, None, Some(&proposal))?;
-        let (session, transition) = ConsensusSession::from_proposal::<Signer>(proposal, config)?;
-        self.handle_transition(scope, session.proposal.proposal_id, transition);
+        let (session, transition) =
+            ConsensusSession::from_proposal::<Signer>(proposal, config, now)?;
+        self.handle_transition(scope, session.proposal.proposal_id, transition, now);
         self.save_session(scope, session)?;
         self.trim_scope_sessions(scope)?;
         Ok(())
@@ -278,17 +283,24 @@ where
     /// Call this when your networking layer delivers a vote from another peer.
     /// Validates the vote (signature, timestamp, chain) and adds it to the
     /// corresponding proposal session. May trigger consensus.
-    pub fn process_incoming_vote(&self, scope: &Scope, vote: Vote) -> Result<(), ConsensusError> {
+    pub fn process_incoming_vote(
+        &self,
+        scope: &Scope,
+        vote: Vote,
+        now: u64,
+    ) -> Result<(), ConsensusError> {
         let session = self.get_session(scope, vote.proposal_id)?;
         validate_vote::<Signer>(
             &vote,
             session.proposal.expiration_timestamp,
             session.proposal.timestamp,
+            now,
         )?;
         let proposal_id = vote.proposal_id;
-        let transition =
-            self.update_session(scope, proposal_id, move |session| session.add_vote(vote))?;
-        self.handle_transition(scope, proposal_id, transition);
+        let transition = self.update_session(scope, proposal_id, move |session| {
+            session.add_vote(vote, now)
+        })?;
+        self.handle_transition(scope, proposal_id, transition, now);
         Ok(())
     }
 
@@ -312,6 +324,7 @@ where
         &self,
         scope: &Scope,
         proposal_id: u32,
+        now: u64,
     ) -> Result<bool, ConsensusError> {
         let timeout_result: Result<Option<bool>, ConsensusError> =
             self.update_session(scope, proposal_id, |session| {
@@ -341,7 +354,7 @@ where
                     ConsensusEvent::ConsensusReached {
                         proposal_id,
                         result: consensus_result,
-                        timestamp: current_timestamp()?,
+                        timestamp: now,
                     },
                 );
                 Ok(consensus_result)
@@ -351,7 +364,7 @@ where
                     scope,
                     ConsensusEvent::ConsensusFailed {
                         proposal_id,
-                        timestamp: current_timestamp()?,
+                        timestamp: now,
                     },
                 );
                 Err(ConsensusError::InsufficientVotesAtTimeout)
@@ -517,14 +530,20 @@ where
             .ok_or(ConsensusError::ScopeNotFound)
     }
 
-    fn handle_transition(&self, scope: &Scope, proposal_id: u32, transition: SessionTransition) {
+    fn handle_transition(
+        &self,
+        scope: &Scope,
+        proposal_id: u32,
+        transition: SessionTransition,
+        now: u64,
+    ) {
         if let SessionTransition::ConsensusReached(result) = transition {
             self.emit_event(
                 scope,
                 ConsensusEvent::ConsensusReached {
                     proposal_id,
                     result,
-                    timestamp: current_timestamp().unwrap_or(0),
+                    timestamp: now,
                 },
             );
         }
