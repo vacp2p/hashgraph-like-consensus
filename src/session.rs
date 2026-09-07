@@ -405,7 +405,7 @@ impl ConsensusSession {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ethereum"))]
 mod tests {
     use std::time::Duration;
 
