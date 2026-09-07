@@ -1,3 +1,4 @@
+#![cfg(feature = "ethereum")]
 mod common;
 use common::now_ts;
 

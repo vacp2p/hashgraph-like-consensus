@@ -15,6 +15,10 @@ unchanged; re-check timeout scheduling if you relied on the earlier resolution p
   could never reject a proposal whose proposer voted YES. In P2P mode a session still
   undecided at the default round cap (`ceil(2n/3)` votes) now resolves only at the
   timeout.
+- `cargo test --no-default-features --tests` did not compile since 0.5.0: the unit tests
+  in `session.rs` and most integration tests imported `alloy` unconditionally. Those
+  tests are now gated behind the `ethereum` feature, and CI runs clippy and the test
+  suite with `--no-default-features` as well.
 
 ## 0.5.0
 

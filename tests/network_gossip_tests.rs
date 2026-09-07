@@ -1,3 +1,4 @@
+#![cfg(feature = "ethereum")]
 mod common;
 use common::{cast_remote_vote, make_service, now_ts, owner_bytes, wrap};
 
