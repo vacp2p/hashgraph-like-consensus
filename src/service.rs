@@ -319,7 +319,7 @@ where
     ///
     /// Returns the consensus result if determinable, or
     /// [`InsufficientVotesAtTimeout`](ConsensusError::InsufficientVotesAtTimeout)
-    /// if the result is a tie after counting silent peers.
+    /// if, after counting silent peers, the result is a tie or below the winning margin.
     pub fn handle_consensus_timeout(
         &self,
         scope: &Scope,

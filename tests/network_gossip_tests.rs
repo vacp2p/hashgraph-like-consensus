@@ -151,6 +151,99 @@ fn test_three_peers_gossip_converges_with_out_of_order_delivery() {
     assert!(res_c);
 }
 
+/// Three peers, proposer votes YES and the other two vote NO. Votes are delivered
+/// to peer_c in a different order than to peer_a/peer_b. This is the order-
+/// independence property the unflippable-lead fix exists for: with the old rule a
+/// node that tallied after two votes could lock onto YES (silently outstanding
+/// votes were ignored) while a node that saw all three votes at once decided NO.
+/// All three peers must converge to the same `ConsensusReached(false)` result
+/// regardless of delivery order.
+#[test]
+fn test_three_peers_gossip_converges_to_no_with_out_of_order_delivery() {
+    let peer_a = make_service();
+    let peer_b = make_service();
+    let peer_c = make_service();
+    let scope = ScopeID::from(format!("{SCOPE}_3p_no"));
+
+    let owner_a = PrivateKeySigner::random();
+    let proposal = peer_a
+        .create_proposal_with_config(
+            &scope,
+            CreateProposalRequest::new(
+                PROPOSAL_NAME.to_string(),
+                PROPOSAL_PAYLOAD,
+                owner_bytes(&owner_a),
+                3,
+                EXPIRATION,
+                true,
+            )
+            .expect("valid proposal request"),
+            Some(ConsensusConfig::gossipsub()),
+            now_ts(),
+        )
+        .expect("peer_a proposal");
+
+    // Gossip proposal to other peers.
+    peer_b
+        .process_incoming_proposal(&scope, proposal.clone(), now_ts())
+        .expect("peer_b accepts proposal");
+    peer_c
+        .process_incoming_proposal(&scope, proposal.clone(), now_ts())
+        .expect("peer_c accepts proposal");
+
+    // Proposer votes YES, the other two peers vote NO: a fully-voted 1 YES / 2 NO
+    // split of n=3.
+    let vote_a = cast_remote_vote(&peer_a, &scope, proposal.proposal_id, true, &wrap(owner_a))
+        .expect("peer_a vote");
+    let owner_b = PrivateKeySigner::random();
+    let vote_b = cast_remote_vote(&peer_b, &scope, proposal.proposal_id, false, &wrap(owner_b))
+        .expect("peer_b vote");
+    let owner_c = PrivateKeySigner::random();
+    let vote_c = cast_remote_vote(&peer_c, &scope, proposal.proposal_id, false, &wrap(owner_c))
+        .expect("peer_c vote");
+
+    // Deliver to peer_a in one order: vote_b then vote_c.
+    peer_a
+        .process_incoming_vote(&scope, vote_b.clone(), now_ts())
+        .expect("peer_a accepts vote_b");
+    peer_a
+        .process_incoming_vote(&scope, vote_c.clone(), now_ts())
+        .expect("peer_a accepts vote_c");
+
+    // Deliver to peer_b in another order: vote_a then vote_c.
+    peer_b
+        .process_incoming_vote(&scope, vote_a.clone(), now_ts())
+        .expect("peer_b accepts vote_a");
+    peer_b
+        .process_incoming_vote(&scope, vote_c, now_ts())
+        .expect("peer_b accepts vote_c");
+
+    // Deliver to peer_c in the reverse order: vote_b then vote_a.
+    peer_c
+        .process_incoming_vote(&scope, vote_b, now_ts())
+        .expect("peer_c accepts vote_b");
+    peer_c
+        .process_incoming_vote(&scope, vote_a, now_ts())
+        .expect("peer_c accepts vote_a");
+
+    let res_a = peer_a
+        .storage()
+        .get_consensus_result(&scope, proposal.proposal_id)
+        .expect("peer_a has consensus");
+    let res_b = peer_b
+        .storage()
+        .get_consensus_result(&scope, proposal.proposal_id)
+        .expect("peer_b has consensus");
+    let res_c = peer_c
+        .storage()
+        .get_consensus_result(&scope, proposal.proposal_id)
+        .expect("peer_c has consensus");
+
+    assert!(!res_a, "peer_a should converge to NO");
+    assert!(!res_b, "peer_b should converge to NO");
+    assert!(!res_c, "peer_c should converge to NO");
+}
+
 /// Multiple peers each schedule their own timeout finalization task.
 /// All peers should converge to the same "failed" state.
 /// With liveness=false and 2 YES votes out of 4, silent peers count as NO at timeout,
