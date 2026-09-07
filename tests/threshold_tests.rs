@@ -89,7 +89,7 @@ fn test_calculate_consensus_result_variants() {
         Some(false)
     );
 
-    // Strict threshold requires more yes votes
+    // Strict threshold requires more yes votes (3 of 5 < ceil(5 * 0.9) = 5)
     votes.clear();
     votes.insert(vec![1], yes_vote(1));
     votes.insert(vec![2], yes_vote(2));
@@ -101,14 +101,26 @@ fn test_calculate_consensus_result_variants() {
         None
     );
 
-    // Fast threshold resolves early
+    // Low threshold (0.5, margin = 3 of 5): 2 YES is below the margin, and the two
+    // outstanding peers are no longer counted as YES before the timeout — must wait.
     votes.clear();
     votes.insert(vec![1], yes_vote(1));
     votes.insert(vec![2], yes_vote(2));
     votes.insert(vec![3], no_vote(3));
     assert_eq!(
         calculate_consensus_result(&votes, 5, 0.5, true, false),
-        Some(true)
+        None
+    );
+
+    // Threshold at or below 1/2 (0.4, margin = 2 of 5): 2 YES meet the margin but a
+    // 2-vote lead with 3 outstanding is flippable (another peer could see 2 NO first),
+    // so the unflippable-lead guard keeps it undecided.
+    votes.clear();
+    votes.insert(vec![1], yes_vote(1));
+    votes.insert(vec![2], yes_vote(2));
+    assert_eq!(
+        calculate_consensus_result(&votes, 5, 0.4, true, false),
+        None
     );
 
     // ── Timeout path: n<=2 is unaffected by is_timeout ──
@@ -161,5 +173,126 @@ fn test_calculate_consensus_result_variants() {
     assert_eq!(
         calculate_consensus_result(&votes, 4, 2.0 / 3.0, true, true),
         None
+    );
+
+    // ── Pre-timeout rule: silent peers are not counted; a side wins only with the
+    // ceil(2n/3) margin AND a lead the outstanding votes cannot overturn. ──
+
+    // n=3, YES+NO, 1 outstanding: 1-vote lead is flippable — must wait.
+    votes.clear();
+    votes.insert(vec![1], yes_vote(1));
+    votes.insert(vec![2], no_vote(2));
+    assert_eq!(
+        calculate_consensus_result(&votes, 3, 2.0 / 3.0, true, false),
+        None
+    );
+
+    // n=3, YES+NO+NO, fully voted: NO's lead (2 vs 1) is unflippable.
+    votes.clear();
+    votes.insert(vec![1], yes_vote(1));
+    votes.insert(vec![2], no_vote(2));
+    votes.insert(vec![3], no_vote(3));
+    assert_eq!(
+        calculate_consensus_result(&votes, 3, 2.0 / 3.0, true, false),
+        Some(false)
+    );
+
+    // n=4, YES+YES+NO, 1 outstanding: YES leads by 1 but that is exactly the
+    // number of outstanding votes — NO could still tie it, so still None.
+    votes.clear();
+    votes.insert(vec![1], yes_vote(1));
+    votes.insert(vec![2], yes_vote(2));
+    votes.insert(vec![3], no_vote(3));
+    assert_eq!(
+        calculate_consensus_result(&votes, 4, 2.0 / 3.0, true, false),
+        None
+    );
+
+    // n=7, 3 YES + 2 NO, 2 outstanding: a 1-vote lead with 2 outstanding could
+    // still tie (both remaining go NO) — must wait.
+    votes.clear();
+    votes.insert(vec![1], yes_vote(1));
+    votes.insert(vec![2], yes_vote(2));
+    votes.insert(vec![3], yes_vote(3));
+    votes.insert(vec![4], no_vote(4));
+    votes.insert(vec![5], no_vote(5));
+    assert_eq!(
+        calculate_consensus_result(&votes, 7, 2.0 / 3.0, true, false),
+        None
+    );
+
+    // n=7, 4 YES + 2 NO, 1 outstanding: the lead is unflippable but 4 is below the
+    // ceil(2n/3) = 5 winning margin — still waits (the margin is kept from 0.6.0).
+    votes.insert(vec![6], yes_vote(6));
+    assert_eq!(
+        calculate_consensus_result(&votes, 7, 2.0 / 3.0, true, false),
+        None
+    );
+
+    // n=7, 5 YES + 2 NO, fully voted: margin met and unflippable — YES.
+    votes.insert(vec![7], yes_vote(7));
+    assert_eq!(
+        calculate_consensus_result(&votes, 7, 2.0 / 3.0, true, false),
+        Some(true)
+    );
+
+    // n=5, 3 YES + 2 NO, fully voted: a majority below ceil(2n/3) = 4 does not
+    // resolve, before or at the timeout (unchanged from 0.6.0; the application may
+    // retry with a new proposal).
+    votes.clear();
+    votes.insert(vec![1], yes_vote(1));
+    votes.insert(vec![2], yes_vote(2));
+    votes.insert(vec![3], yes_vote(3));
+    votes.insert(vec![4], no_vote(4));
+    votes.insert(vec![5], no_vote(5));
+    assert_eq!(
+        calculate_consensus_result(&votes, 5, 2.0 / 3.0, true, false),
+        None
+    );
+    assert_eq!(
+        calculate_consensus_result(&votes, 5, 2.0 / 3.0, true, true),
+        None
+    );
+
+    // Timeout keeps the margin too: n=7, 4 YES, 3 silent counted as NO → 4 < 5 → None.
+    votes.clear();
+    votes.insert(vec![1], yes_vote(1));
+    votes.insert(vec![2], yes_vote(2));
+    votes.insert(vec![3], yes_vote(3));
+    votes.insert(vec![4], yes_vote(4));
+    assert_eq!(
+        calculate_consensus_result(&votes, 7, 2.0 / 3.0, false, true),
+        None
+    );
+    // Same votes with silent peers counted as YES → 7 YES → Some(true).
+    assert_eq!(
+        calculate_consensus_result(&votes, 7, 2.0 / 3.0, true, true),
+        Some(true)
+    );
+
+    // Pre-timeout ignores liveness_criteria_yes entirely: n=3, YES + NO stays
+    // undecided for both settings.
+    votes.clear();
+    votes.insert(vec![1], yes_vote(1));
+    votes.insert(vec![2], no_vote(2));
+    assert_eq!(
+        calculate_consensus_result(&votes, 3, 2.0 / 3.0, false, false),
+        None
+    );
+
+    // Tie consistency: a fully-voted exact tie resolves via liveness_criteria_yes
+    // identically before and at the timeout (0.6.0 behaviour, kept deliberately).
+    votes.clear();
+    votes.insert(vec![1], yes_vote(1));
+    votes.insert(vec![2], yes_vote(2));
+    votes.insert(vec![3], no_vote(3));
+    votes.insert(vec![4], no_vote(4));
+    assert_eq!(
+        calculate_consensus_result(&votes, 4, 2.0 / 3.0, true, true),
+        Some(true)
+    );
+    assert_eq!(
+        calculate_consensus_result(&votes, 4, 2.0 / 3.0, false, true),
+        Some(false)
     );
 }

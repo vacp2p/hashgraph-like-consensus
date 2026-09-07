@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.0
+
+**Behaviour change** — silent peers are no longer counted before the timeout. A session
+that used to resolve as soon as `ceil(2n/3)` votes were in now waits for a winning side
+with `ceil(n * threshold)` real votes and a lead the outstanding votes cannot overturn,
+or for `handle_consensus_timeout`. The timeout tally and `consensus_threshold` are
+unchanged; re-check timeout scheduling if you relied on the earlier resolution point.
+
+### Fixed
+
+- Silent peers were folded into the tally before the timeout, so peers tallying at
+  different points could reach opposite results for the same ballots; a 3-member group
+  could never reject a proposal whose proposer voted YES. In P2P mode a session still
+  undecided at the default round cap (`ceil(2n/3)` votes) now resolves only at the
+  timeout.
+
 ## 0.5.0
 
 **Breaking** — the library is now fully synchronous. Every method drops `async`

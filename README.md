@@ -335,8 +335,8 @@ are counted toward quorum so that the `liveness_criteria_yes` flag can take effe
 - **`liveness_criteria_yes = false`** — silent peers are counted as NO votes. A proposal
   fails unless there are enough explicit YES votes to carry it.
 
-The only case where timeout produces no result is a **tie** (equal YES and NO weight
-after counting silent peers), which marks the session as failed.
+Timeout marks the session as failed when, after counting silent peers, the result is a
+**tie** or the leading side is below the winning margin (`ceil(n * threshold)` votes).
 
 ```rust
 // Drive the timer however your app prefers, then call the handler when it fires.
@@ -353,7 +353,14 @@ match service.handle_consensus_timeout(&scope, proposal_id, now) {
 ```
 
 During normal voting (before timeout), the quorum gate still requires `ceil(2n/3)`
-actual votes — silent peers are not counted until timeout.
+actual votes — silent peers are not counted until timeout. A side is decided early only
+when it holds the winning margin and its lead exceeds the votes still outstanding, so no
+two peers can decide opposite results from the same ballots. Otherwise the session stays
+active until the timeout. In P2P mode with the default round cap (`ceil(2n/3)` votes),
+an undecided session at the cap resolves only via `handle_consensus_timeout`.
+
+A peer whose timeout fires before a late vote arrives may still fail the session while
+another peer decides it; choose timeouts that absorb delivery delay.
 
 ### Subscribing to Events
 

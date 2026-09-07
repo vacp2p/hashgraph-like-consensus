@@ -366,7 +366,8 @@ impl ConsensusSession {
     }
 
     /// RFC Section 4 (Liveness): Check if consensus reached
-    /// - n > 2: need >n/2 YES votes among at least 2n/3 distinct peers
+    /// - n > 2: a side needs ceil(n * threshold) votes (2n/3 by default) and a lead
+    ///   larger than the outstanding votes; silent peers count only at timeout
     /// - n ≤ 2: require unanimous YES votes
     /// - Equality: use liveness_criteria_yes
     fn check_consensus(&mut self) -> SessionTransition {

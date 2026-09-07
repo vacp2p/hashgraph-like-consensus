@@ -217,13 +217,18 @@ pub(crate) fn validate_vote_chain(votes: &[Vote]) -> Result<(), ConsensusError> 
 /// Calculate the consensus result from collected votes.
 ///
 /// RFC Section 4 (Liveness): Determines consensus based on vote counts and liveness criteria.
-/// Returns `true` if YES wins, `false` if NO wins. If votes are tied, uses
-/// `liveness_criteria_yes` as the tie-breaker (RFC Section 4: Equality of votes).
+/// Returns `Some(true)` if YES wins, `Some(false)` if NO wins, `None` if undecided.
 ///
-/// When `is_timeout` is `true`, silent peers are counted toward quorum so that the
-/// liveness criteria (RFC Section 4, Silent Node Management) can actually take effect.
-/// Without this, a session with offline peers would never reach the quorum gate and
-/// the silent-peer weighting logic would be unreachable.
+/// A side wins with at least `ceil(n * consensus_threshold)` votes (`ceil(2n/3)` by
+/// default) and more votes than the other side.
+/// - Before the timeout only real votes count, and the lead must also exceed the
+///   outstanding votes so no later vote can overturn it on any peer.
+/// - At the timeout silent peers are counted on the `liveness_criteria_yes` side
+///   (RFC Section 4). Below the margin or tied, the result is `None`.
+///
+/// `n <= 2` requires all votes and unanimous YES. A full vote set that ties resolves
+/// to `liveness_criteria_yes` in both paths. Order independence assumes
+/// `expected_voters` is the true member count.
 pub fn calculate_consensus_result(
     votes: &HashMap<Vec<u8>, Vote>,
     expected_voters: u32,
@@ -234,8 +239,9 @@ pub fn calculate_consensus_result(
     let total_votes = votes.len() as u32;
     let yes_votes = votes.values().filter(|v| v.vote).count() as u32;
     let no_votes = total_votes.saturating_sub(yes_votes);
-    let silent_votes = expected_voters.saturating_sub(total_votes);
+    let remaining = expected_voters.saturating_sub(total_votes);
 
+    // n <= 2: unchanged (all votes required, unanimous YES).
     if expected_voters <= 2 {
         if total_votes < expected_voters {
             return None;
@@ -243,46 +249,43 @@ pub fn calculate_consensus_result(
         return Some(yes_votes == expected_voters);
     }
 
-    let required_votes = calculate_required_votes(expected_voters, consensus_threshold);
-    // At timeout, silent peers are accounted for (as YES or NO depending on liveness),
-    // so the effective total includes all expected voters.
-    let effective_total = if is_timeout {
-        expected_voters
-    } else {
-        total_votes
-    };
-    if effective_total < required_votes {
-        return None;
-    }
-
-    let required_choice_votes =
-        calculate_threshold_based_value(expected_voters, consensus_threshold);
-    let yes_weight = yes_votes
-        + if liveness_criteria_yes {
-            silent_votes
-        } else {
-            0
-        };
-    let no_weight = no_votes
-        + if liveness_criteria_yes {
-            0
-        } else {
-            silent_votes
-        };
-
-    if yes_weight >= required_choice_votes && yes_weight > no_weight {
-        return Some(true);
-    }
-
-    if no_weight >= required_choice_votes && no_weight > yes_weight {
-        return Some(false);
-    }
-
-    if total_votes == expected_voters && yes_weight == no_weight {
+    // Full vote set, exact tie (n even): liveness decides in both paths.
+    if remaining == 0 && yes_votes == no_votes {
         return Some(liveness_criteria_yes);
     }
 
-    None
+    // Winning margin, and for n > 2 also the RFC §3 quorum of distinct voters.
+    let required_choice_votes =
+        calculate_threshold_based_value(expected_voters, consensus_threshold);
+
+    if !is_timeout {
+        if total_votes < required_choice_votes {
+            return None;
+        }
+        // Silent peers are not counted yet. `no + remaining` never grows as votes
+        // arrive, so a lead larger than `remaining` holds on every peer.
+        if yes_votes >= required_choice_votes && yes_votes > no_votes + remaining {
+            return Some(true);
+        }
+        if no_votes >= required_choice_votes && no_votes > yes_votes + remaining {
+            return Some(false);
+        }
+        return None;
+    }
+
+    // Timeout: silent peers take the liveness side, then the same margin applies.
+    let (yes_weight, no_weight) = if liveness_criteria_yes {
+        (yes_votes + remaining, no_votes)
+    } else {
+        (yes_votes, no_votes + remaining)
+    };
+    if yes_weight >= required_choice_votes && yes_weight > no_weight {
+        Some(true)
+    } else if no_weight >= required_choice_votes && no_weight > yes_weight {
+        Some(false)
+    } else {
+        None // below the margin or tied after folding: session fails
+    }
 }
 
 /// Calculate the minimum number of votes needed to potentially reach consensus.
